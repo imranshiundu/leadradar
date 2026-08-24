@@ -4,6 +4,7 @@ import json
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -31,8 +32,20 @@ async def require_token(request: Request) -> None:
     """Shared-secret guard for mutating routes when DASHBOARD_TOKEN is set."""
     if not settings.dashboard_token:
         return
-    supplied = request.headers.get('X-Dashboard-Token') or \
-        (await request.body() and json.loads(request.body() or b'{}').get('token')) or ''
+    supplied = request.headers.get('X-Dashboard-Token') or ''
+    if not supplied:
+        try:
+            body = await request.body()
+            if body:
+                data = json.loads(body)
+                supplied = data.get('token', '')
+        except Exception:
+            pass
+    if not supplied:
+        ct = request.headers.get('content-type', '')
+        if 'multipart' in ct or 'form' in ct:
+            form = await request.form()
+            supplied = form.get('token', '')
     if supplied != settings.dashboard_token:
         raise HTTPException(401, 'Invalid or missing dashboard token')
 
@@ -53,6 +66,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title='LeadRadarSafe', version='1.0.0', lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=['*'],
+    allow_credentials=True,
+    allow_methods=['*'],
+    allow_headers=['*'],
+)
 app.mount("/static", StaticFiles(directory="app/web/static"), name="static")
 
 
@@ -333,6 +353,12 @@ async def api_inbox_poll():
         return {'ok': True, **result}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f'IMAP poll failed: {exc}')
+
+
+@app.get('/api/replies')
+async def api_replies():
+    rows = [dict(r) for r in await db.list_replies(limit=200)]
+    return {'replies': rows}
 
 
 @app.get('/api/analytics')
