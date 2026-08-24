@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Import contacts</h1>
+<p>Paste or upload a contact list — markdown tables, TSV, CSV, pipe tables, or plain lines.
+Rows need at least an email; name/phone/priority are extracted automatically.</p>
+<form method="post" action="/api/import" enctype="multipart/form-data">
+  <label>Upload file</label>
+  <input type="file" name="file" accept=".txt,.csv,.md,.tsv">
+  <label>…or paste text</label>
+  <textarea name="text" rows="12" placeholder="1&#9;Bigmiitch Events&#9;+254 724 214 461&#9;info@example.com&#9;🔥🔥🔥"></textarea>
+  <button type="submit">Import</button>
+</form>
+
+<h2>Replies</h2>
+<p>Matched replies from your inbox appear <a href="/replies">here</a>. Poll manually:</p>
+<form method="post" action="/api/inbox/poll"><button type="submit">Poll inbox now</button></form>
+{% endblock %}

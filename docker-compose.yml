@@ -1,0 +1,11 @@
+services:
+  leadradar:
+    build: .
+    container_name: leadradar-safe
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./lead_radar.db:/app/lead_radar.db
+      - ./config:/app/config

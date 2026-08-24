@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:center">
+  <h1>Campaigns</h1>
+  <a href="/campaigns/new">+ New campaign</a>
+</div>
+
+<table>
+  <thead>
+    <tr><th>Name</th><th>Status</th><th>Targets</th><th>Sent</th><th>Replies</th><th>Interested</th><th>Actions</th></tr>
+  </thead>
+  <tbody>
+  {% for c in campaigns %}
+    <tr>
+      <td><strong>{{ c['name'] }}</strong></td>
+      <td><span class="badge badge-{{ c['status'] }}">{{ c['status'] }}</span></td>
+      <td>{{ c['analytics']['targets'] }}</td>
+      <td>{{ c['analytics']['messages_sent'] }}</td>
+      <td>{{ c['analytics']['stopped_replied'] }}</td>
+      <td>{{ c['analytics']['reply_breakdown'].get('interested', 0) }}</td>
+      <td class="actions">
+        {% if c['status'] != 'active' %}
+        <form method="post" action="/api/campaigns/{{ c['id'] }}/status">
+          <input type="hidden" name="status" value="active">
+          <button type="submit">Activate</button>
+        </form>
+        {% else %}
+        <form method="post" action="/api/campaigns/{{ c['id'] }}/status">
+          <input type="hidden" name="status" value="paused">
+          <button type="submit">Pause</button>
+        </form>
+        <form method="post" action="/api/campaigns/{{ c['id'] }}/run-once">
+          <button type="submit">Run due sends now</button>
+        </form>
+        {% endif %}
+        <form method="post" action="/api/campaigns/{{ c['id'] }}/attach">
+          <button type="submit">Attach contacts</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

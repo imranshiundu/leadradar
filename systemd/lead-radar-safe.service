@@ -1,0 +1,17 @@
+[Unit]
+Description=LeadRadarSafe
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/lead_radar_safe
+EnvironmentFile=/opt/lead_radar_safe/.env
+ExecStart=/opt/lead_radar_safe/.venv/bin/python run.py
+Restart=always
+RestartSec=8
+User=www-data
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target

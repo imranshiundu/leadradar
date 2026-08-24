@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LeadRadarSafe | Dashboard</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=JetBrains+Mono&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="logo">LeadRadarSafe</div>
+            <nav>
+                <a href="/" class="btn {% if not status %}btn-primary{% else %}btn-outline{% endif %}">All</a>
+                <a href="/?status=alerted" class="btn {% if status == 'alerted' %}btn-primary{% else %}btn-outline{% endif %}">Alerted</a>
+                <a href="/?status=approved" class="btn {% if status == 'approved' %}btn-primary{% else %}btn-outline{% endif %}">Approved</a>
+                <a href="/?status=sent" class="btn {% if status == 'sent' %}btn-primary{% else %}btn-outline{% endif %}">Sent</a>
+                <a href="/campaigns" class="btn btn-outline">Campaigns</a>
+                <a href="/pipeline" class="btn btn-outline">Pipeline</a>
+                <a href="/replies" class="btn btn-outline">Replies</a>
+                <a href="/import" class="btn btn-primary">+ Import</a>
+            </nav>
+        </header>
+
+        <main>
+            {% if not leads %}
+            <div class="card" style="text-align: center; padding: 4rem;">
+                <p style="color: var(--text-muted);">No leads found for this status.</p>
+            </div>
+            {% endif %}
+
+            {% for lead in leads %}
+            <div class="card">
+                <div class="card-title">
+                    <a href="/lead/{{ lead.id }}">{{ lead.name }}</a>
+                    <span class="badge badge-{{ lead.status }}">{{ lead.status }}</span>
+                    {% if lead.need_score %}
+                    <span style="font-size: 0.875rem; color: var(--text-muted); margin-left: auto;">Score: {{ lead.need_score }}</span>
+                    {% endif %}
+                </div>
+                <p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem;">
+                    {{ lead.ai_summary or "Processing lead details..." }}
+                </p>
+                <div class="meta-grid" style="margin-bottom: 1rem;">
+                    {% if lead.city %}
+                    <div class="meta-item">
+                        <span class="meta-label">Location</span>
+                        <span class="meta-value">{{ lead.city }}</span>
+                    </div>
+                    {% endif %}
+                    {% if lead.business_type %}
+                    <div class="meta-item">
+                        <span class="meta-label">Category</span>
+                        <span class="meta-value">{{ lead.business_type }}</span>
+                    </div>
+                    {% endif %}
+                    {% if lead.source %}
+                    <div class="meta-item">
+                        <span class="meta-label">Source</span>
+                        <span class="meta-value">{{ lead.source }}</span>
+                    </div>
+                    {% endif %}
+                </div>
+                <div style="display: flex; gap: 0.5rem; border-top: 1px solid var(--border); padding-top: 1rem;">
+                    <a href="/lead/{{ lead.id }}" class="btn btn-outline" style="padding: 0.4rem 0.8rem; font-size: 0.75rem;">Details</a>
+                    {% if lead.status == 'new' or lead.status == 'alerted' %}
+                    <form action="/lead/{{ lead.id }}/approve" method="post" style="display: inline;">
+                        <button type="submit" class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.75rem;">Approve</button>
+                    </form>
+                    <form action="/lead/{{ lead.id }}/reject" method="post" style="display: inline;">
+                        <button type="submit" class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.75rem;">Reject</button>
+                    </form>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </main>
+    </div>
+</body>
+</html>

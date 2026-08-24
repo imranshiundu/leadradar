@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ lead.name }} | Lead Details</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=JetBrains+Mono&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="back-link">← Back to Dashboard</a>
+
+        <div class="card">
+            <div class="card-title" style="font-size: 1.75rem; margin-bottom: 0.5rem;">
+                {{ lead.name }}
+                <span class="badge badge-{{ lead.status }}">{{ lead.status }}</span>
+            </div>
+            <div style="color: var(--text-muted); font-size: 1rem; margin-bottom: 1.5rem;">
+                {% if lead.need_score %}Score: <b>{{ lead.need_score }}/100</b> | {% endif %}
+                Type: {{ lead.opportunity_type }}
+            </div>
+
+            <div class="meta-grid">
+                <div class="meta-item">
+                    <span class="meta-label">Email</span>
+                    <span class="meta-value">{{ lead.email or "—" }}</span>
+                </div>
+                <div class="meta-item">
+                    <span class="meta-label">Phone</span>
+                    <span class="meta-value">{{ lead.phone or "—" }}</span>
+                </div>
+                <div class="meta-item">
+                    <span class="meta-label">Website</span>
+                    <span class="meta-value">{% if lead.website_url %}<a href="{{ lead.website_url }}" target="_blank">{{ lead.website_url }}</a>{% else %}—{% endif %}</span>
+                </div>
+                <div class="meta-item">
+                    <span class="meta-label">Source URL</span>
+                    <span class="meta-value">{% if lead.source_url %}<a href="{{ lead.source_url }}" target="_blank">View Source</a>{% else %}—{% endif %}</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">AI Analysis</div>
+            <p style="margin-bottom: 1.5rem;">{{ lead.ai_summary or "No summary available." }}</p>
+            
+            <span class="meta-label">Reasoning</span>
+            <p style="font-size: 0.875rem; color: var(--text-muted);">{{ lead.ai_reason or "N/A" }}</p>
+        </div>
+
+        <div class="card" style="border-left: 4px solid var(--primary);">
+            <div class="card-title">Personalized Outreach Draft</div>
+            <div class="draft-box" id="draft-content">{{ lead.draft_message or "AI has not generated a draft for this lead." }}</div>
+            
+            <div style="display: flex; gap: 1rem;">
+                <form action="/lead/{{ lead.id }}/approve" method="post">
+                    <button type="submit" class="btn btn-primary">Approve Lead</button>
+                </form>
+                <form action="/lead/{{ lead.id }}/send" method="post">
+                    <button type="submit" class="btn btn-outline" {% if lead.status != 'approved' %}disabled title="Approve lead first"{% endif %}>Send Email Now</button>
+                </form>
+                <form action="/lead/{{ lead.id }}/reject" method="post">
+                    <button type="submit" class="btn btn-danger">Reject</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">Raw Public Text</div>
+            <div class="raw-text-box">{{ lead.raw_text or "No raw text available." }}</div>
+        </div>
+    </div>
+</body>
+</html>

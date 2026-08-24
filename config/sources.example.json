@@ -1,0 +1,60 @@
+{
+  "business_search_queries": [
+    {
+      "name": "Nairobi salons with social pages",
+      "query": "Nairobi salon Instagram WhatsApp -site:instagram.com/reel",
+      "city": "Nairobi",
+      "business_type": "salon"
+    },
+    {
+      "name": "Kibera tour operators without obvious websites",
+      "query": "Kibera tours WhatsApp Facebook",
+      "city": "Nairobi",
+      "business_type": "tour operator"
+    },
+    {
+      "name": "Nairobi mechanics and garages",
+      "query": "Nairobi mechanic garage WhatsApp Facebook",
+      "city": "Nairobi",
+      "business_type": "garage"
+    }
+  ],
+  "seed_pages": [
+    {
+      "name": "Example seed page",
+      "url": "https://example.com",
+      "city": "Unknown",
+      "business_type": "unknown"
+    }
+  ],
+  "rss_feeds": [
+    {
+      "name": "Remote OK programming jobs",
+      "url": "https://remoteok.com/remote-dev-jobs.rss",
+      "opportunity_type": "job"
+    },
+    {
+      "name": "We Work Remotely programming jobs",
+      "url": "https://weworkremotely.com/categories/remote-programming-jobs.rss",
+      "opportunity_type": "job"
+    }
+  ],
+  "service_keywords": [
+    "need a website",
+    "looking for a web developer",
+    "website redesign",
+    "landing page",
+    "booking page",
+    "portfolio website",
+    "business website",
+    "shop website",
+    "admin dashboard",
+    "wordpress developer",
+    "next.js developer"
+  ],
+  "blocked_domains": [
+    "facebook.com/sharer",
+    "instagram.com/reel",
+    "tiktok.com"
+  ]
+}
