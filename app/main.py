@@ -191,6 +191,15 @@ async def api_create_campaign(
     return {'ok': True, 'campaign_id': cid}
 
 
+@app.get('/api/campaigns/{campaign_id}/steps')
+async def api_list_steps(campaign_id: int):
+    campaign = await db.get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(404, 'Campaign not found')
+    steps = [dict(r) for r in await db.list_sequence_steps(campaign_id)]
+    return {'steps': steps}
+
+
 @app.post('/api/campaigns/{campaign_id}/steps', dependencies=[Depends(require_token)])
 async def api_add_step(
     campaign_id: int,
