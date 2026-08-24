@@ -68,6 +68,8 @@ const App = {
       modal: null,
       toasts: [],
       replyFilter: '',
+      dragId: null,
+      dragCol: null,
       setTab: 'conn',
       cfgApi: CFG.api, cfgToken: CFG.token, testMsg: '', testOk: false,
       hook: { name: '', url: '', events: 'reply,interested' },
@@ -142,6 +144,25 @@ const App = {
       return cols;
     },
     maxDaily() { return Math.max(1, ...(this.analytics.daily_sends || []).map(d => d.sent)); },
+    nudges() {
+      const out = [];
+      for (const c of this.campaigns) {
+        const a = c.analytics || {};
+        if (c.status === 'draft' && (a.targets || 0) > 0) {
+          out.push({ color: '#fbbf24', text: '"' + c.name + '" is drafted with ' + a.targets + ' contacts — activate to start.', label: 'Activate', run: () => this.campAction(c, 'activate') });
+        } else if (c.status === 'active' && (a.finished || 0) < (a.targets || 0)) {
+          out.push({ color: '#60a5fa', text: '"' + c.name + '": ' + ((a.targets || 0) - (a.finished || 0)) + ' contacts still pending sends.', label: 'Run now', run: () => this.campAction(c, 'run') });
+        }
+      }
+      if (this.auto.pollInbox === false && this.replies.length === 0) {
+        out.push({ color: '#5f6b63', text: 'Inbox mirroring is off — replies land unseen. Turn it on in Automations.', label: '', run: null });
+      }
+      const enrichable = this.leads.filter(l => l.priority === 'high' && !l.website_url).length;
+      if (enrichable > 0 && !this.auto.enrichHigh) {
+        out.push({ color: '#34d399', text: enrichable + ' high-priority leads have no website data — enrichment is off.', label: '', run: null });
+      }
+      return out.slice(0, 6);
+    },
   },
   mounted() {
     window.addEventListener('hashchange', () => this.onRoute());
@@ -156,6 +177,19 @@ const App = {
     setInterval(() => { if (this.auto.autoRefresh && ['/','/leads','/campaigns','/replies','/inbox'].includes(this.route)) this.routeData().catch(()=>{}); }, 30000);
   },
   methods: {
+    ago: timeago,
+    fmtDate,
+    avatarHue(name) {
+      let h = 0;
+      for (const c of String(name || '?')) h = (h * 31 + c.charCodeAt(0)) % 360;
+      return h;
+    },
+    initials(name) {
+      return String(name || '?').split(/\s+/).map(w => w[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
+    },
+    stageColor(s) {
+      return { new: '#60a5fa', contacted: '#fbbf24', replied: '#34d399', meeting: '#34d399', won: '#34d399', lost: '#f87171' }[s] || '#5f6b63';
+    },
     async boot() {
       try {
         const h = await GET('/health');
@@ -238,6 +272,15 @@ const App = {
     },
     go(r) { location.hash = '#' + r; },
     searchFocus() { if (!['/', '/leads'].includes(this.route)) this.go('/leads'); },
+    dragStart(ev, l) { this.dragId = l.id; ev.dataTransfer.effectAllowed = 'move'; ev.dataTransfer.setData('text/plain', String(l.id)); },
+    dragEnd() { this.dragId = null; this.dragCol = null; },
+    async dropLead(ev, stage) {
+      const id = parseInt(ev.dataTransfer.getData('text/plain'), 10);
+      const l = this.leads.find(x => x.id === id);
+      this.dragId = null; this.dragCol = null;
+      if (l && (l.pipeline_stage || 'new') !== stage) await this.moveStage(l, stage);
+    },
+    cp(t) { copyTxt(t); this.toast('Copied'); },
     onRoute() {
       this.route = location.hash.replace('#', '') || '/';
       this.sideOpen = false;
@@ -470,6 +513,37 @@ const App = {
             </div>
           </div>
         </div>
+
+        <div class="dash-grid" style="margin-top:14px">
+          <div class="panel">
+            <div class="panel-h"><span class="panel-t">Automations</span><a href="#/settings" class="panel-s">configure →</a></div>
+            <div style="padding:2px 18px 12px">
+              <div class="tog">
+                <div class="tog-info"><div class="tog-name">Mirror inbox & classify replies</div><div class="tog-desc">Gmail sync + keyword classification every 15 min.</div></div>
+                <label class="switch"><input type="checkbox" v-model="auto.pollInbox" @change="saveAuto"><span class="sw"></span></label>
+              </div>
+              <div class="tog">
+                <div class="tog-info"><div class="tog-name">Verify new imports</div><div class="tog-desc">Deliverability check runs right after every import.</div></div>
+                <label class="switch"><input type="checkbox" v-model="auto.verifyImport" @change="saveAuto"><span class="sw"></span></label>
+              </div>
+              <div class="tog" style="border-bottom:none">
+                <div class="tog-info"><div class="tog-name">Enrich high-priority leads</div><div class="tog-desc">Pulls website + socials automatically on dashboard load.</div></div>
+                <label class="switch"><input type="checkbox" v-model="auto.enrichHigh" @change="saveAuto"><span class="sw"></span></label>
+              </div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-h"><span class="panel-t">Needs attention</span><span class="panel-s">{{nudges.length}} items</span></div>
+            <div style="padding:8px 18px 16px">
+              <div v-for="(n,i) in nudges" :key="i" class="nudge">
+                <span class="stage-dot" :style="{background:n.color}"></span>
+                <span style="flex:1;font-size:.82rem">{{n.text}}</span>
+                <button class="btn btn-g btn-xs" v-if="n.action" @click="n.run()">{{n.label}}</button>
+              </div>
+              <div v-if="!nudges.length" class="empty" style="padding:20px"><div class="empty-d">All clear — nothing waiting on you.</div></div>
+            </div>
+          </div>
+        </div>
       </template>
 
       <template v-else-if="route==='/leads'">
@@ -576,19 +650,38 @@ const App = {
 
       <template v-else-if="route==='/pipeline'">
         <div class="page-head">
-          <div><div class="page-title">Pipeline</div><div class="page-desc">Move deals forward — change stage inline.</div></div>
+          <div><div class="page-title">Pipeline</div><div class="page-desc">{{leads.length}} contacts · drag cards between stages</div></div>
         </div>
-        <div class="board">
-          <div class="col" v-for="s in stages" :key="s">
-            <div class="col-h"><span class="col-t">{{s}}</span><span class="col-n">{{(boardCols[s]||[]).length}}</span></div>
-            <div class="kcard" v-for="l in (boardCols[s]||[]).slice(0,30)" :key="l.id" @click="openLead(l)">
-              <div class="kcard-n">{{l.name}}</div>
-              <div class="kcard-e">{{l.email}}</div>
+        <div class="board" @dragover.prevent>
+          <div class="col" v-for="s in stages" :key="s"
+               :class="{over:dragCol===s}"
+               @dragenter.prevent="dragCol=s"
+               @dragover.prevent="dragCol=s"
+               @drop.prevent="dropLead($event,s)">
+            <div class="col-h">
+              <span class="col-t"><span class="stage-dot" :style="{background:stageColor(s)}"></span>{{s}}</span>
+              <span class="col-n">{{(boardCols[s]||[]).length}}</span>
+            </div>
+            <div class="kcard" v-for="l in (boardCols[s]||[]).slice(0,40)" :key="l.id"
+                 draggable="true"
+                 :class="{priHigh:l.priority==='high', dragging:dragId===l.id}"
+                 @dragstart="dragStart($event,l)"
+                 @dragend="dragEnd"
+                 @click="openLead(l)">
+              <div class="kcard-top">
+                <span class="avatar" :style="{background:'hsl('+avatarHue(l.name)+',42%,36%)'}">{{initials(l.name)}}</span>
+                <div style="min-width:0;flex:1">
+                  <div class="kcard-n">{{l.name}}</div>
+                  <div class="kcard-e">{{l.email}}</div>
+                </div>
+                <button class="icon-btn kcopy" v-if="l.email" @click.stop="cp(l.email)" title="Copy email"><i v-ic="'copy'"></i></button>
+              </div>
               <div class="kcard-ev" v-if="l.event_name"><i v-ic="'calendar'"></i>{{l.event_name}}</div>
-              <select :value="s" @click.stop @change="moveStage(l,$event.target.value)">
+              <select class="kstage" :value="s" @click.stop @change="moveStage(l,$event.target.value)">
                 <option v-for="st in stages" :key="st" :value="st">{{st}}</option>
               </select>
             </div>
+            <div v-if="!(boardCols[s]||[]).length" class="col-empty">Drop here</div>
           </div>
         </div>
       </template>
