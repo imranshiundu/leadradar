@@ -1,0 +1,8 @@
+{
+    "rewrites": [
+        {
+            "source": "/lr/:path*",
+            "destination": "http://169.58.128.213/lr/:path*"
+        }
+    ]
+}
