@@ -166,6 +166,13 @@ nav {
 .badge-not_interested, .badge-bounce { background: var(--red-dim); color: var(--red); }
 .badge-maybe_later { background: var(--yellow-dim); color: var(--yellow); }
 .badge-unknown, .badge-ooo { background: var(--blue-dim); color: var(--blue); }
+.badge-valid { background: var(--green-dim); color: var(--green); }
+.badge-risky { background: var(--yellow-dim); color: var(--yellow); }
+.badge-invalid { background: var(--red-dim); color: var(--red); }
+.badge-flagged { background: var(--blue-dim); color: var(--blue); }
+.badge-inbound { background: var(--green-dim); color: var(--green); }
+.badge-outbound { background: var(--accent); background: #6c5ce720; color: var(--accent-light); }
+.badge-sent { background: var(--accent); background: #6c5ce720; color: var(--accent-light); }
 
 /* ── Tables ────────────────────────────────── */
 table {

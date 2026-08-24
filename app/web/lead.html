@@ -25,7 +25,7 @@
 
         <main>
             <div style="display:flex;gap:0.75rem;align-items:center;margin-bottom:1.5rem">
-                <a href="/" class="btn btn-outline btn-sm">← Back</a>
+                <a href="/" class="btn btn-outline btn-sm">&larr; Back</a>
                 <span class="badge badge-{{ lead.status }}">{{ lead.status }}</span>
                 {% if lead.pipeline_stage %}<span class="badge badge-new">{{ lead.pipeline_stage }}</span>{% endif %}
                 {% if lead.priority == 'high' %}<span class="badge badge-high">high priority</span>{% endif %}
@@ -40,10 +40,35 @@
                 {% if lead.source %}<div class="meta-item"><span class="meta-label">Source</span><span class="meta-value">{{ lead.source }}</span></div>{% endif %}
                 {% if lead.business_type %}<div class="meta-item"><span class="meta-label">Type</span><span class="meta-value">{{ lead.business_type }}</span></div>{% endif %}
                 {% if lead.need_score %}<div class="meta-item"><span class="meta-label">Score</span><span class="meta-value">{{ lead.need_score }}/100</span></div>{% endif %}
-                {% if lead.event_name %}<div class="meta-item"><span class="meta-label">Event</span><span class="meta-value" style="color:var(--accent-light)">{{ lead.event_name }}{% if lead.event_date %} — {{ lead.event_date }}{% endif %}</span></div>{% endif %}
+                {% if lead.event_name %}<div class="meta-item"><span class="meta-label">Event</span><span class="meta-value" style="color:var(--accent-light)">{{ lead.event_name }}{% if lead.event_date %} &mdash; {{ lead.event_date }}{% endif %}</span></div>{% endif %}
                 <div class="meta-item"><span class="meta-label">Created</span><span class="meta-value dim">{{ lead.created_at }}</span></div>
             </div>
 
+            <!-- Action bar -->
+            <div style="display:flex;gap:0.5rem;margin-bottom:1.5rem;flex-wrap:wrap">
+                {% if lead.status in ('new','alerted') %}
+                <form action="/lead/{{ lead.id }}/approve" method="post"><button type="submit" class="btn btn-primary">Approve</button></form>
+                <form action="/lead/{{ lead.id }}/reject" method="post"><button type="submit" class="btn btn-danger">Reject</button></form>
+                {% endif %}
+                {% if lead.status == 'approved' %}
+                <form action="/lead/{{ lead.id }}/send" method="post"><button type="submit" class="btn btn-primary">Send Email</button></form>
+                {% endif %}
+                <form method="post" action="/api/leads/{{ lead.id }}/stage" style="display:flex;gap:0.35rem">
+                    <select name="stage">
+                        <option value="new" {% if lead.pipeline_stage == 'new' %}selected{% endif %}>new</option>
+                        <option value="contacted" {% if lead.pipeline_stage == 'contacted' %}selected{% endif %}>contacted</option>
+                        <option value="replied" {% if lead.pipeline_stage == 'replied' %}selected{% endif %}>replied</option>
+                        <option value="meeting" {% if lead.pipeline_stage == 'meeting' %}selected{% endif %}>meeting</option>
+                        <option value="won" {% if lead.pipeline_stage == 'won' %}selected{% endif %}>won</option>
+                        <option value="lost" {% if lead.pipeline_stage == 'lost' %}selected{% endif %}>lost</option>
+                    </select>
+                    <button type="submit" class="btn btn-outline btn-sm">Update</button>
+                </form>
+                <form method="post" action="/api/leads/{{ lead.id }}/enrich" style="display:inline"><button type="submit" class="btn btn-outline btn-sm">Enrich from web</button></form>
+                <form method="post" action="/lead/{{ lead.id }}/send-test" style="display:inline"><button type="submit" class="btn btn-outline btn-sm">Send test</button></form>
+            </div>
+
+            <!-- AI Summary -->
             {% if lead.ai_summary %}
             <div class="card">
                 <h3 style="font-size:0.8rem;font-weight:700;color:var(--text-dim);margin-bottom:0.5rem">AI Summary</h3>
@@ -66,27 +91,98 @@
             </div>
             {% endif %}
 
-            <div style="display:flex;gap:0.5rem;margin-top:1.5rem">
-                {% if lead.status in ('new','alerted') %}
-                <form action="/lead/{{ lead.id }}/approve" method="post"><button type="submit" class="btn btn-primary">Approve</button></form>
-                <form action="/lead/{{ lead.id }}/reject" method="post"><button type="submit" class="btn btn-danger">Reject</button></form>
-                {% endif %}
-                {% if lead.status == 'approved' %}
-                <form action="/lead/{{ lead.id }}/send" method="post"><button type="submit" class="btn btn-primary">Send Email</button></form>
-                {% endif %}
-                <form method="post" action="/api/leads/{{ lead.id }}/stage" style="display:flex;gap:0.35rem">
-                    <select name="stage">
-                        <option value="new" {% if lead.pipeline_stage == 'new' %}selected{% endif %}>new</option>
-                        <option value="contacted" {% if lead.pipeline_stage == 'contacted' %}selected{% endif %}>contacted</option>
-                        <option value="replied" {% if lead.pipeline_stage == 'replied' %}selected{% endif %}>replied</option>
-                        <option value="meeting" {% if lead.pipeline_stage == 'meeting' %}selected{% endif %}>meeting</option>
-                        <option value="won" {% if lead.pipeline_stage == 'won' %}selected{% endif %}>won</option>
-                        <option value="lost" {% if lead.pipeline_stage == 'lost' %}selected{% endif %}>lost</option>
-                    </select>
-                    <button type="submit" class="btn btn-outline btn-sm">Update stage</button>
+            <!-- Email Threads -->
+            <div class="card" id="threads">
+                <h3 style="font-size:0.8rem;font-weight:700;color:var(--text-dim);margin-bottom:0.75rem">Email Threads</h3>
+                <div id="threads-list"></div>
+            </div>
+
+            <!-- Notes -->
+            <div class="card" id="notes">
+                <h3 style="font-size:0.8rem;font-weight:700;color:var(--text-dim);margin-bottom:0.75rem">Notes</h3>
+                <div id="notes-list"></div>
+                <form method="post" action="/api/leads/{{ lead.id }}/notes" style="margin-top:1rem">
+                    <textarea name="note" rows="3" placeholder="Add a note about this contact..." required></textarea>
+                    <div style="display:flex;gap:0.5rem;margin-top:0.5rem">
+                        <select name="category" style="width:auto">
+                            <option value="general">General</option>
+                            <option value="call">Call</option>
+                            <option value="meeting">Meeting</option>
+                            <option value="follow-up">Follow-up</option>
+                            <option value="deal">Deal</option>
+                        </select>
+                        <button type="submit" class="btn btn-primary btn-sm">Add note</button>
+                    </div>
                 </form>
+            </div>
+
+            <!-- Activity Log -->
+            <div class="card" id="activity">
+                <h3 style="font-size:0.8rem;font-weight:700;color:var(--text-dim);margin-bottom:0.75rem">Activity Log</h3>
+                <div id="activity-list"></div>
             </div>
         </main>
     </div>
+
+    <script>
+    async function loadLeadData() {
+        const leadId = {{ lead.id }};
+        try {
+            const [threads, notes, activity] = await Promise.all([
+                fetch(`/api/threads?lead_id=${leadId}`).then(r => r.json()),
+                fetch(`/api/leads/${leadId}/notes`).then(r => r.json()),
+                fetch(`/api/leads/${leadId}/activity`).then(r => r.json()),
+            ]);
+
+            // Threads
+            const threadsEl = document.getElementById('threads-list');
+            if (threads.threads && threads.threads.length) {
+                threadsEl.innerHTML = threads.threads.map(t => `
+                    <div style="display:flex;justify-content:space-between;padding:0.5rem 0;border-bottom:1px solid var(--border)">
+                        <div>
+                            <strong style="font-size:0.85rem">${t.subject || '(no subject)'}</strong>
+                            <span class="badge badge-${t.direction === 'inbound' ? 'replied' : 'sent'}" style="margin-left:0.5rem">${t.direction}</span>
+                        </div>
+                        <span class="dim" style="font-size:0.75rem">${t.last_message_at || ''} &middot; ${t.message_count} msgs</span>
+                    </div>
+                `).join('');
+            } else {
+                threadsEl.innerHTML = '<p class="dim" style="font-size:0.82rem">No email threads yet.</p>';
+            }
+
+            // Notes
+            const notesEl = document.getElementById('notes-list');
+            if (notes.notes && notes.notes.length) {
+                notesEl.innerHTML = notes.notes.map(n => `
+                    <div style="padding:0.5rem 0;border-bottom:1px solid var(--border)">
+                        <div style="display:flex;justify-content:space-between">
+                            <span class="badge badge-${n.category}" style="font-size:0.65rem">${n.category}</span>
+                            <span class="dim" style="font-size:0.72rem">${n.created_at}</span>
+                        </div>
+                        <p style="margin-top:0.3rem;font-size:0.85rem;white-space:pre-wrap">${n.note}</p>
+                    </div>
+                `).join('');
+            } else {
+                notesEl.innerHTML = '<p class="dim" style="font-size:0.82rem">No notes yet.</p>';
+            }
+
+            // Activity
+            const actEl = document.getElementById('activity-list');
+            if (activity.activity && activity.activity.length) {
+                actEl.innerHTML = activity.activity.map(a => `
+                    <div style="display:flex;justify-content:space-between;padding:0.4rem 0;border-bottom:1px solid var(--border)">
+                        <span style="font-size:0.82rem"><strong>${a.action}</strong> ${a.detail || ''}</span>
+                        <span class="dim" style="font-size:0.72rem">${a.created_at}</span>
+                    </div>
+                `).join('');
+            } else {
+                actEl.innerHTML = '<p class="dim" style="font-size:0.82rem">No activity recorded.</p>';
+            }
+        } catch (e) {
+            console.error('Failed to load lead data:', e);
+        }
+    }
+    loadLeadData();
+    </script>
 </body>
 </html>

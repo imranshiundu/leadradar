@@ -403,3 +403,167 @@ async def send_test_to_self(lead_id: int):
     mid = await send_email_with_id(target, f'[TEST] {build_subject(lead)}', build_body(lead))
     await db.add_event('email:test_sent', {'to': target}, lead_id)
     return {'ok': True, 'to': target, 'message_id': mid}
+
+
+# ---------------------------------------------------------------------------
+# Email threads
+# ---------------------------------------------------------------------------
+
+
+@app.get('/api/threads')
+async def api_threads(lead_id: int | None = None):
+    threads = [dict(r) for r in await db.list_threads(lead_id=lead_id)]
+    return {'threads': threads}
+
+
+# ---------------------------------------------------------------------------
+# Lead notes
+# ---------------------------------------------------------------------------
+
+
+@app.post('/api/leads/{lead_id}/notes', dependencies=[Depends(require_token)])
+async def api_add_note(lead_id: int, note: str = Form(...), category: str = Form('general')):
+    nid = await db.add_note(lead_id, note, category)
+    await db.log_activity(lead_id, None, 'note', note[:100])
+    return {'ok': True, 'note_id': nid}
+
+
+@app.get('/api/leads/{lead_id}/notes')
+async def api_list_notes(lead_id: int):
+    notes = [dict(r) for r in await db.list_notes(lead_id)]
+    return {'notes': notes}
+
+
+# ---------------------------------------------------------------------------
+# Activity log
+# ---------------------------------------------------------------------------
+
+
+@app.get('/api/leads/{lead_id}/activity')
+async def api_activity(lead_id: int):
+    activity = [dict(r) for r in await db.list_activity(lead_id)]
+    return {'activity': activity}
+
+
+# ---------------------------------------------------------------------------
+# A/B testing
+# ---------------------------------------------------------------------------
+
+
+@app.post('/api/campaigns/{campaign_id}/ab-variants', dependencies=[Depends(require_token)])
+async def api_create_ab_variant(
+    campaign_id: int,
+    variant_name: str = Form(...),
+    subject_template: str = Form(''),
+    body_template: str = Form(...),
+):
+    vid = await db.create_ab_variant(campaign_id, variant_name, subject_template, body_template)
+    return {'ok': True, 'variant_id': vid}
+
+
+@app.get('/api/campaigns/{campaign_id}/ab-variants')
+async def api_list_ab_variants(campaign_id: int):
+    variants = [dict(r) for r in await db.list_ab_variants(campaign_id)]
+    return {'variants': variants}
+
+
+# ---------------------------------------------------------------------------
+# Email verification
+# ---------------------------------------------------------------------------
+
+
+@app.post('/api/verify-email')
+async def api_verify_email(email: str = Form(...)):
+    from app.verification import verify_email
+    result = verify_email(email)
+    await db.cache_verification(email, result['status'], result['mx_valid'],
+                                result['disposable'], result['free_provider'],
+                                result['role_account'])
+    return result
+
+
+@app.post('/api/verify-batch')
+async def api_verify_batch(request: Request):
+    from app.verification import verify_email
+    body = await request.json()
+    emails = body.get('emails', [])
+    results = []
+    for email in emails[:100]:
+        result = verify_email(email)
+        await db.cache_verification(email, result['status'], result['mx_valid'],
+                                    result['disposable'], result['free_provider'],
+                                    result['role_account'])
+        results.append({'email': email, **result})
+    return {'results': results}
+
+
+# ---------------------------------------------------------------------------
+# Lead enrichment
+# ---------------------------------------------------------------------------
+
+
+@app.post('/api/leads/{lead_id}/enrich', dependencies=[Depends(require_token)])
+async def api_enrich_lead(lead_id: int):
+    from app.enrichment import enrich_lead
+    result = await enrich_lead(db, lead_id)
+    return {'ok': True, 'extracted': result}
+
+
+# ---------------------------------------------------------------------------
+# Webhooks
+# ---------------------------------------------------------------------------
+
+
+@app.post('/api/webhooks', dependencies=[Depends(require_token)])
+async def api_create_webhook(name: str = Form(...), url: str = Form(...),
+                             events: str = Form('reply,interested')):
+    wid = await db.add_webhook(name, url, events)
+    return {'ok': True, 'webhook_id': wid}
+
+
+@app.get('/api/webhooks')
+async def api_list_webhooks():
+    webhooks = [dict(r) for r in await db.list_webhooks(active_only=False)]
+    return {'webhooks': webhooks}
+
+
+# ---------------------------------------------------------------------------
+# Send-time optimization
+# ---------------------------------------------------------------------------
+
+
+@app.get('/api/leads/{lead_id}/best-times')
+async def api_best_send_times(lead_id: int):
+    times = await db.best_send_times(lead_id)
+    return {'best_times': times}
+
+
+# ---------------------------------------------------------------------------
+# Bulk verification for campaign
+# ---------------------------------------------------------------------------
+
+
+@app.post('/api/campaigns/{campaign_id}/verify', dependencies=[Depends(require_token)])
+async def api_verify_campaign(campaign_id: int):
+    from app.verification import verify_email
+    campaign = await db.get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(404, 'Campaign not found')
+    leads = await db.list_leads(limit=10000)
+    results = {'valid': 0, 'risky': 0, 'invalid': 0, 'flagged': 0}
+    for row in leads:
+        lead = dict(row)
+        email = lead.get('email')
+        if not email:
+            continue
+        cached = await db.get_verification(email)
+        if cached:
+            status = dict(cached)['status']
+        else:
+            result = verify_email(email)
+            status = result['status']
+            await db.cache_verification(email, status, result['mx_valid'],
+                                        result['disposable'], result['free_provider'],
+                                        result['role_account'])
+        results[status] = results.get(status, 0) + 1
+    return results

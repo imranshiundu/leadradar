@@ -156,6 +156,10 @@ async def poll_replies(db: Database, telegram_notify=None) -> dict:
         highest_uid = max(highest_uid, int(item['imap_uid']))
         row = await db.find_message_by_rfc_ids(item['candidates'])
         if row is None:
+            # No matching outbound message — still create a thread for incoming
+            if lead_row := _find_lead_by_email(item['from'], db):
+                await db.upsert_thread(int(lead_row['id']), item['from'], item['subject'],
+                                       'inbound', item['received_at'])
             continue
         matched += 1
         classification = classify_reply(item['subject'], item['body'], item['from'])
@@ -166,6 +170,24 @@ async def poll_replies(db: Database, telegram_notify=None) -> dict:
             item['from'], item['subject'],
             item['body'][:600], classification, item['received_at'],
         )
+        # Create/update email thread
+        if lead_row:
+            thread_key = item['from']
+            await db.upsert_thread(int(lead_row['id']), thread_key, item['subject'],
+                                   'inbound', item['received_at'])
+            # Log activity
+            await db.log_activity(int(lead_row['id']), None, 'reply',
+                                  f'{classification}: {item["subject"][:80]}',
+                                  metadata={'classification': classification, 'from': item['from']})
+            # Record send-time for optimization (replied=True)
+            if item['received_at']:
+                try:
+                    from datetime import datetime as dt
+                    received = dt.fromisoformat(item['received_at'].replace('Z', '+00:00'))
+                    await db.record_send_time(int(lead_row['id']),
+                                              received.hour, received.weekday(), replied=True)
+                except (ValueError, TypeError):
+                    pass
         if lead_row:
             stage = {'interested': 'replied', 'maybe_later': 'replied',
                      'unknown': 'replied', 'not_interested': 'lost',
@@ -174,6 +196,15 @@ async def poll_replies(db: Database, telegram_notify=None) -> dict:
                                         f'reply classified: {classification}')
         if row['lead_id']:
             await db.stop_campaign_leads_for_reply(int(row['lead_id']))
+        # Trigger webhooks for interesting replies
+        if classification in ('interested', 'not_interested', 'bounce'):
+            await db.trigger_webhooks('reply', {
+                'lead_id': row['lead_id'],
+                'from': item['from'],
+                'subject': item['subject'],
+                'classification': classification,
+                'snippet': item['body'][:300],
+            })
         if telegram_notify and classification == 'interested' and lead_row:
             await telegram_notify(
                 f"Interested reply from {lead_row['name']} ({item['from']}):\n"
@@ -183,3 +214,11 @@ async def poll_replies(db: Database, telegram_notify=None) -> dict:
         await db.set_state(state_key, highest_uid)
     await db.add_event('inbox:polled', {'new': len(messages), 'matched': matched})
     return {'checked': len(messages), 'matched': matched}
+
+
+async def _find_lead_by_email(email: str, db: Database):
+    """Find a lead by email address."""
+    async with db.connect() as conn:
+        conn.row_factory = __import__('aiosqlite').Row
+        cur = await conn.execute('SELECT * FROM leads WHERE email=? LIMIT 1', (email,))
+        return await cur.fetchone()

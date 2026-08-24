@@ -156,6 +156,84 @@ class Database:
                     missing_email INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS email_threads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    lead_id INTEGER REFERENCES leads(id),
+                    thread_key TEXT NOT NULL,
+                    subject TEXT,
+                    last_message_at TEXT,
+                    message_count INTEGER NOT NULL DEFAULT 0,
+                    direction TEXT NOT NULL DEFAULT 'unknown',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_threads_lead ON email_threads(lead_id);
+                CREATE INDEX IF NOT EXISTS idx_threads_key ON email_threads(thread_key);
+
+                CREATE TABLE IF NOT EXISTS lead_notes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    lead_id INTEGER NOT NULL REFERENCES leads(id),
+                    note TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT 'general',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_notes_lead ON lead_notes(lead_id);
+
+                CREATE TABLE IF NOT EXISTS activity_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    lead_id INTEGER REFERENCES leads(id),
+                    campaign_id INTEGER REFERENCES campaigns(id),
+                    action TEXT NOT NULL,
+                    detail TEXT,
+                    metadata TEXT,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_activity_lead ON activity_log(lead_id);
+                CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS ab_variants (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    campaign_id INTEGER NOT NULL REFERENCES campaigns(id),
+                    variant_name TEXT NOT NULL,
+                    subject_template TEXT,
+                    body_template TEXT NOT NULL,
+                    send_count INTEGER NOT NULL DEFAULT 0,
+                    reply_count INTEGER NOT NULL DEFAULT 0,
+                    open_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS email_verification (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    mx_valid INTEGER NOT NULL DEFAULT 0,
+                    disposable INTEGER NOT NULL DEFAULT 0,
+                    free_provider INTEGER NOT NULL DEFAULT 0,
+                    role_account INTEGER NOT NULL DEFAULT 0,
+                    last_checked TEXT NOT NULL,
+                    UNIQUE(email)
+                );
+
+                CREATE TABLE IF NOT EXISTS send_time_stats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    lead_id INTEGER REFERENCES leads(id),
+                    hour_utc INTEGER NOT NULL,
+                    day_of_week INTEGER NOT NULL,
+                    sent INTEGER NOT NULL DEFAULT 0,
+                    replied INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(lead_id, hour_utc, day_of_week)
+                );
+
+                CREATE TABLE IF NOT EXISTS webhooks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    events TEXT NOT NULL DEFAULT 'reply,interested',
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                );
                 '''
             )
             await db.commit()
@@ -564,3 +642,209 @@ class Database:
             )
             await db.commit()
             return int(cur.lastrowid)
+
+    # ------------------------------------------------------------------
+    # Email threads
+    # ------------------------------------------------------------------
+
+    async def upsert_thread(self, lead_id: int, thread_key: str, subject: str,
+                            direction: str, message_at: str | None = None) -> int:
+        now = utc_now()
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                'SELECT id FROM email_threads WHERE thread_key=?', (thread_key,))
+            existing = await cur.fetchone()
+            if existing:
+                await db.execute(
+                    '''UPDATE email_threads SET last_message_at=?, message_count=message_count+1,
+                       subject=COALESCE(?, subject) WHERE id=?''',
+                    (message_at or now, subject, int(existing['id'])))
+                await db.commit()
+                return int(existing['id'])
+            cur = await db.execute(
+                '''INSERT INTO email_threads(lead_id, thread_key, subject, last_message_at,
+                                             message_count, direction, status, created_at)
+                   VALUES (?, ?, ?, ?, 1, ?, 'active', ?)''',
+                (lead_id, thread_key, subject, message_at or now, direction, now))
+            await db.commit()
+            return int(cur.lastrowid)
+
+    async def list_threads(self, lead_id: int | None = None, limit: int = 50) -> list[aiosqlite.Row]:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            if lead_id:
+                cur = await db.execute(
+                    'SELECT * FROM email_threads WHERE lead_id=? ORDER BY last_message_at DESC LIMIT ?',
+                    (lead_id, limit))
+            else:
+                cur = await db.execute(
+                    'SELECT * FROM email_threads ORDER BY last_message_at DESC LIMIT ?', (limit,))
+            return await cur.fetchall()
+
+    # ------------------------------------------------------------------
+    # Lead notes
+    # ------------------------------------------------------------------
+
+    async def add_note(self, lead_id: int, note: str, category: str = 'general') -> int:
+        async with self.connect() as db:
+            cur = await db.execute(
+                'INSERT INTO lead_notes(lead_id, note, category, created_at) VALUES (?, ?, ?, ?)',
+                (lead_id, note, category, utc_now()))
+            await db.commit()
+            return int(cur.lastrowid)
+
+    async def list_notes(self, lead_id: int, limit: int = 50) -> list[aiosqlite.Row]:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                'SELECT * FROM lead_notes WHERE lead_id=? ORDER BY created_at DESC LIMIT ?',
+                (lead_id, limit))
+            return await cur.fetchall()
+
+    # ------------------------------------------------------------------
+    # Activity log
+    # ------------------------------------------------------------------
+
+    async def log_activity(self, lead_id: int | None, campaign_id: int | None,
+                           action: str, detail: str | None = None,
+                           metadata: dict | None = None) -> int:
+        meta_json = json.dumps(metadata, ensure_ascii=False) if metadata else None
+        async with self.connect() as db:
+            cur = await db.execute(
+                '''INSERT INTO activity_log(lead_id, campaign_id, action, detail, metadata, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                (lead_id, campaign_id, action, detail, meta_json, utc_now()))
+            await db.commit()
+            return int(cur.lastrowid)
+
+    async def list_activity(self, lead_id: int, limit: int = 100) -> list[aiosqlite.Row]:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                'SELECT * FROM activity_log WHERE lead_id=? ORDER BY created_at DESC LIMIT ?',
+                (lead_id, limit))
+            return await cur.fetchall()
+
+    # ------------------------------------------------------------------
+    # A/B testing
+    # ------------------------------------------------------------------
+
+    async def create_ab_variant(self, campaign_id: int, variant_name: str,
+                                subject_template: str | None, body_template: str) -> int:
+        async with self.connect() as db:
+            cur = await db.execute(
+                '''INSERT INTO ab_variants(campaign_id, variant_name, subject_template, body_template, created_at)
+                   VALUES (?, ?, ?, ?, ?)''',
+                (campaign_id, variant_name, subject_template, body_template, utc_now()))
+            await db.commit()
+            return int(cur.lastrowid)
+
+    async def list_ab_variants(self, campaign_id: int) -> list[aiosqlite.Row]:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                'SELECT * FROM ab_variants WHERE campaign_id=? ORDER BY variant_name', (campaign_id,))
+            return await cur.fetchall()
+
+    async def increment_ab_stat(self, variant_id: int, field: str) -> None:
+        if field not in ('send_count', 'reply_count', 'open_count'):
+            return
+        async with self.connect() as db:
+            await db.execute(
+                f'UPDATE ab_variants SET {field}={field}+1 WHERE id=?', (variant_id,))
+            await db.commit()
+
+    async def best_ab_variant(self, campaign_id: int) -> aiosqlite.Row | None:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                '''SELECT * FROM ab_variants WHERE campaign_id=? AND send_count > 0
+                   ORDER BY (CAST(reply_count AS FLOAT) / MAX(send_count, 1)) DESC LIMIT 1''',
+                (campaign_id,))
+            return await cur.fetchone()
+
+    # ------------------------------------------------------------------
+    # Email verification
+    # ------------------------------------------------------------------
+
+    async def cache_verification(self, email: str, status: str, mx_valid: bool,
+                                 disposable: bool, free_provider: bool, role_account: bool) -> None:
+        async with self.connect() as db:
+            await db.execute(
+                '''INSERT OR REPLACE INTO email_verification(email, status, mx_valid, disposable,
+                                                            free_provider, role_account, last_checked)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                (email, status, 1 if mx_valid else 0, 1 if disposable else 0,
+                 1 if free_provider else 0, 1 if role_account else 0, utc_now()))
+            await db.commit()
+
+    async def get_verification(self, email: str) -> aiosqlite.Row | None:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute('SELECT * FROM email_verification WHERE email=?', (email,))
+            return await cur.fetchone()
+
+    # ------------------------------------------------------------------
+    # Send-time optimization
+    # ------------------------------------------------------------------
+
+    async def record_send_time(self, lead_id: int, hour_utc: int, day_of_week: int,
+                               replied: bool = False) -> None:
+        async with self.connect() as db:
+            await db.execute(
+                '''INSERT INTO send_time_stats(lead_id, hour_utc, day_of_week, sent, replied)
+                   VALUES (?, ?, ?, 1, ?)
+                   ON CONFLICT(lead_id, hour_utc, day_of_week) DO UPDATE SET
+                     sent=sent+1, replied=replied+?''',
+                (lead_id, hour_utc, day_of_week, 1 if replied else 0, 1 if replied else 0))
+            await db.commit()
+
+    async def best_send_times(self, lead_id: int, limit: int = 3) -> list[dict]:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                '''SELECT hour_utc, day_of_week, sent, replied,
+                   CAST(replied AS FLOAT) / MAX(sent, 1) AS reply_rate
+                   FROM send_time_stats WHERE lead_id=? AND sent >= 2
+                   ORDER BY reply_rate DESC, sent DESC LIMIT ?''',
+                (lead_id, limit))
+            return [dict(r) for r in await cur.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Webhooks
+    # ------------------------------------------------------------------
+
+    async def add_webhook(self, name: str, url: str, events: str = 'reply,interested') -> int:
+        async with self.connect() as db:
+            cur = await db.execute(
+                'INSERT INTO webhooks(name, url, events, active, created_at) VALUES (?, ?, ?, 1, ?)',
+                (name, url, events, utc_now()))
+            await db.commit()
+            return int(cur.lastrowid)
+
+    async def list_webhooks(self, active_only: bool = True) -> list[aiosqlite.Row]:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            q = 'SELECT * FROM webhooks' + (' WHERE active=1' if active_only else '')
+            cur = await db.execute(q + ' ORDER BY created_at DESC')
+            return await cur.fetchall()
+
+    async def trigger_webhooks(self, event_type: str, payload: dict) -> None:
+        import asyncio
+        import httpx
+        webhooks = await self.list_webhooks(active_only=True)
+        for wh in webhooks:
+            wh = dict(wh)
+            if event_type not in wh.get('events', '').split(','):
+                continue
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    await client.post(wh['url'], json={
+                        'event': event_type,
+                        'timestamp': utc_now(),
+                        **payload,
+                    })
+                await self.add_event('webhook:sent', {'webhook_id': wh['id'], 'event': event_type})
+            except Exception as exc:  # noqa: BLE001
+                await self.add_event('webhook:error', {'webhook_id': wh['id'], 'error': str(exc)})
