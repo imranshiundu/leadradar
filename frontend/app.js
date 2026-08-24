@@ -1,3 +1,6 @@
+const BRAND = window.LR_BRAND || { name: 'LeadRadar', sub: 'Safe Pro', tagline: '', slug: 'leadradar' };
+document.title = BRAND.name;
+
 const CFG = {
   get api() { return localStorage.getItem('lr_api') || (location.origin + '/lr'); },
   set api(v) { localStorage.setItem('lr_api', v); },
@@ -149,8 +152,8 @@ const App = {
     });
     this.boot();
     setInterval(() => { this.auto = Automations.load(); }, 4000);
-    setInterval(() => { if (this.auto.pollInbox) this.pollInbox(true); }, 15 * 60000);
-    setInterval(() => { if (this.auto.autoRefresh && ['/','/leads','/campaigns','/replies'].includes(this.route)) this.routeData().catch(()=>{}); }, 30000);
+    setInterval(() => { if (this.auto.pollInbox) { this.pollInbox(true); this._inboxSilent = true; this.syncInbox(); this._inboxSilent = false; } }, 15 * 60000);
+    setInterval(() => { if (this.auto.autoRefresh && ['/','/leads','/campaigns','/replies','/inbox'].includes(this.route)) this.routeData().catch(()=>{}); }, 30000);
   },
   methods: {
     async boot() {
@@ -234,6 +237,7 @@ const App = {
       if (l) this.openLead(l); else this.go('/leads');
     },
     go(r) { location.hash = '#' + r; },
+    searchFocus() { if (!['/', '/leads'].includes(this.route)) this.go('/leads'); },
     onRoute() {
       this.route = location.hash.replace('#', '') || '/';
       this.sideOpen = false;
@@ -343,7 +347,7 @@ const App = {
       const csv = [cols.join(',')].concat(rows.map(l => cols.map(c => '"' + String(l[c] || '').replace(/"/g, '""') + '"').join(','))).join('\n');
       const a = document.createElement('a');
       a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-      a.download = 'leadradar-leads.csv'; a.click();
+      a.download = BRAND.slug + '-leads.csv'; a.click();
       this.toast('Exported ' + rows.length + ' leads');
     },
     saveConn() {
@@ -384,7 +388,7 @@ const App = {
   <aside class="side" :class="{open:sideOpen}">
     <div class="brand">
       <div class="brand-mark"><i v-ic="'radar'"></i></div>
-      <div><div class="brand-name">LeadRadar</div><div class="brand-sub">Safe Pro</div></div>
+      <div><div class="brand-name">${BRAND.name}</div><div class="brand-sub">${BRAND.sub}</div></div>
     </div>
     <nav class="nav">
       <div class="nav-label">Workspace</div>
@@ -415,7 +419,7 @@ const App = {
       <button class="burger icon-btn" @click="sideOpen=!sideOpen"><i v-ic="'filter'"></i></button>
       <div class="search">
         <i v-ic="'search'"></i>
-        <input ref="search" v-model="q" placeholder="Search leads…   ( / )" @focus="if(!['/','/leads'].includes(route))go('/leads')" @keydown.enter="go('/leads')">
+        <input ref="search" v-model="q" placeholder="Search leads…   ( / )" @focus="searchFocus" @keydown.enter="go('/leads')">
       </div>
       <div class="top-spacer"></div>
       <div class="top-actions">
@@ -694,7 +698,7 @@ const App = {
           <div v-if="setTab==='conn'" style="padding:14px 20px 20px">
             <label class="fl">Backend URL</label>
             <input type="url" v-model="cfgApi">
-            <p class="hint">Default <span class="mono">{{origin}}/lr</span> — point anywhere LeadRadar runs.</p>
+            <p class="hint">Default <span class="mono">{{origin}}/lr</span> — point anywhere ${BRAND.name} runs.</p>
             <label class="fl">Dashboard token</label>
             <input type="password" v-model="cfgToken" placeholder="Only if DASHBOARD_TOKEN is set server-side">
             <div style="display:flex;gap:8px;margin-top:16px">
@@ -769,8 +773,8 @@ const App = {
   <div class="auth-brand">
     <div class="auth-brand-inner">
       <div class="brand-mark big"><i v-ic="'radar'"></i></div>
-      <h1>LeadRadar</h1>
-      <p>Outreach command center. Every lead, every reply, one radar.</p>
+      <h1>${BRAND.name}</h1>
+      <p>${BRAND.tagline}</p>
     </div>
   </div>
   <div class="auth-side">

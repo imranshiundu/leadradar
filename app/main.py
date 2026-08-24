@@ -88,7 +88,7 @@ class SessionGuardMiddleware:
         await self.app(scope, receive, send)
 
 
-app = FastAPI(title='LeadRadarSafe', version='1.0.0', lifespan=lifespan)
+app = FastAPI(title=settings.brand_name, version='1.0.0', lifespan=lifespan)
 app.add_middleware(SessionGuardMiddleware)
 app.add_middleware(
     CORSMiddleware,

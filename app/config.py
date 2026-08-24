@@ -8,6 +8,7 @@ class Settings(BaseSettings):
 
     app_host: str = '0.0.0.0'
     app_port: int = 8080
+    brand_name: str = 'LeadRadar'
     app_base_url: str = 'http://localhost:8080'
     database_path: str = './lead_radar.db'
     sources_path: str = './config/sources.example.json'

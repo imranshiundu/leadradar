@@ -87,7 +87,7 @@ async def send_recovery_draft(db: Database, email: str) -> str:
         raise RuntimeError('No account with that email')
     code, otp_hash = generate_otp()
     await db.set_otp(email, otp_hash)
-    subject = f'LeadRadar recovery code: {code}'
+    subject = f'{s.brand_name} recovery code: {code}'
     body = (
         'Your LeadRadar recovery code is:\n\n'
         f'    {code}\n\n'
