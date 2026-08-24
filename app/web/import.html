@@ -1,17 +1,20 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>Import contacts</h1>
-<p>Paste or upload a contact list — markdown tables, TSV, CSV, pipe tables, or plain lines.
-Rows need at least an email; name/phone/priority are extracted automatically.</p>
-<form method="post" action="/api/import" enctype="multipart/form-data">
-  <label>Upload file</label>
-  <input type="file" name="file" accept=".txt,.csv,.md,.tsv">
-  <label>…or paste text</label>
-  <textarea name="text" rows="12" placeholder="1&#9;Bigmiitch Events&#9;+254 724 214 461&#9;info@example.com&#9;🔥🔥🔥"></textarea>
-  <button type="submit">Import</button>
-</form>
+<h1 style="font-size:1.3rem;font-weight:800;margin-bottom:1.5rem">Import contacts</h1>
+<div class="card">
+    <p class="muted" style="margin-bottom:1rem">Paste or upload a contact list. Supports markdown tables, TSV, CSV, pipe tables, and plain lines. Rows need at least an email address.</p>
+    <form method="post" action="/api/import" enctype="multipart/form-data">
+        <label>Upload file</label>
+        <input type="file" name="file" accept=".txt,.csv,.md,.tsv">
+        <label>...or paste text</label>
+        <textarea name="text" rows="10" placeholder="1&#9;Bigmiitch Events&#9;+254 724 214 461&#9;info@example.com&#9;🔥🔥🔥&#10;2&#9;Nairobi Play&#9;+254 708 208 767&#9;nairobiplay@gmail.com&#9;🔥🔥"></textarea>
+        <div style="margin-top:1rem"><button type="submit" class="btn btn-primary">Import contacts</button></div>
+    </form>
+</div>
 
-<h2>Replies</h2>
-<p>Matched replies from your inbox appear <a href="/replies">here</a>. Poll manually:</p>
-<form method="post" action="/api/inbox/poll"><button type="submit">Poll inbox now</button></form>
+<div class="card" style="margin-top:1.5rem">
+    <h2 style="font-size:1rem;font-weight:700;margin-bottom:0.75rem">Reply inbox</h2>
+    <p class="muted" style="font-size:0.82rem;margin-bottom:0.75rem">Poll your Gmail to detect and classify replies to sent campaign emails.</p>
+    <form method="post" action="/api/inbox/poll"><button type="submit" class="btn btn-primary btn-sm">Poll inbox now</button></form>
+</div>
 {% endblock %}

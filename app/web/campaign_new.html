@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 style="font-size:1.3rem;font-weight:800;margin-bottom:1.5rem">New campaign</h1>
+<div class="card">
+    <form method="post" action="/api/campaigns/create">
+        <label>Campaign name</label>
+        <input type="text" name="name" required placeholder="e.g. Taptap Oct/Nov Outreach">
+
+        <label>Subject template</label>
+        <input type="text" name="subject_template" required placeholder="e.g. Taptap for {{name}} — event payments made easy">
+
+        <label>Body template (initial email)</label>
+        <textarea name="body_template" rows="10" required placeholder="Hi {{first_name}},
+
+We're building Taptap to make events easier to run..."></textarea>
+        <p class="dim" style="font-size:0.72rem;margin-top:0.2rem">Available variables: {{name}}, {{first_name}}, {{email}}, {{city}}, {{business_type}}, {{event_name}}, {{event_date}}</p>
+
+        <h3 style="font-size:0.9rem;font-weight:700;margin-top:2rem;margin-bottom:0.75rem">Follow-up #1</h3>
+        <label>Days after initial send</label>
+        <input type="number" name="follow_up_1_days" value="3" min="1" max="30">
+        <label>Follow-up body (leave blank to skip)</label>
+        <textarea name="follow_up_1_body" rows="6" placeholder="Hi {{first_name}},
+
+Just following up on my earlier email about Taptap for {{name}}..."></textarea>
+
+        <h3 style="font-size:0.9rem;font-weight:700;margin-top:2rem;margin-bottom:0.75rem">Follow-up #2</h3>
+        <label>Days after follow-up #1</label>
+        <input type="number" name="follow_up_2_days" value="7" min="1" max="30">
+        <label>Follow-up body (leave blank to skip)</label>
+        <textarea name="follow_up_2_body" rows="6" placeholder="Hi {{first_name}},
+
+One last note — Taptap handles event entry and payments via QR codes..."></textarea>
+
+        <div style="margin-top:2rem;display:flex;gap:0.5rem">
+            <button type="submit" class="btn btn-primary">Create campaign</button>
+            <a href="/campaigns" class="btn btn-outline">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

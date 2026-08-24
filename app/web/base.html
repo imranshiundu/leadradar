@@ -5,41 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LeadRadarSafe Pro</title>
     <link rel="stylesheet" href="/static/styles.css">
-    <style>
-        .board { display: flex; gap: 1rem; overflow-x: auto; align-items: flex-start; }
-        .board .column { min-width: 240px; flex: 1; background: var(--bg-card, #fff); border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem; }
-        .board h3 { margin: 0 0 0.75rem; font-size: 0.9rem; text-transform: capitalize; }
-        .board .count { color: var(--text-muted); font-weight: 400; }
-        .board .card { border: 1px solid var(--border); border-radius: 6px; padding: 0.6rem; margin-bottom: 0.6rem; }
-        .muted { color: var(--text-muted); font-size: 0.78rem; }
-        .event { font-size: 0.78rem; margin-top: 0.25rem; }
-        .stage-form { display: flex; gap: 0.35rem; margin-top: 0.5rem; }
-        .stage-form select { flex: 1; font-size: 0.75rem; }
-        table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
-        th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
-        .actions form { display: inline-block; margin-right: 0.4rem; }
-        .badge-high { background: #fee2e2; color: #b91c1c; }
-        .badge-active { background: #dcfce7; color: #166534; }
-        .badge-paused { background: #fef3c7; color: #92400e; }
-        .badge-draft, .badge-done { background: var(--border); color: var(--text-muted); }
-        .badge-interested { background: #dcfce7; color: #166534; }
-        .badge-not_interested, .badge-bounce { background: #fee2e2; color: #b91c1c; }
-        .badge-maybe_later { background: #fef3c7; color: #92400e; }
-        .badge-unknown, .badge-ooo { background: #e0e7ff; color: #3730a3; }
-        textarea { width: 100%; font-family: monospace; font-size: 0.8rem; margin: 0.5rem 0; }
-        input[type=file] { display: block; margin-bottom: 1rem; }
-        label { font-weight: 600; font-size: 0.85rem; }
-    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
 <body>
     <div class="container">
         <header class="header">
-            <div class="logo">LeadRadarSafe <span style="color:var(--accent)">Pro</span></div>
+            <a href="/" class="logo">LeadRadar<span class="accent">Safe</span></a>
             <nav>
                 <a href="/" class="btn btn-outline">Leads</a>
                 <a href="/campaigns" class="btn btn-outline">Campaigns</a>
                 <a href="/pipeline" class="btn btn-outline">Pipeline</a>
                 <a href="/replies" class="btn btn-outline">Replies</a>
+                <a href="/analytics" class="btn btn-outline">Analytics</a>
                 <a href="/import" class="btn btn-primary">+ Import</a>
             </nav>
         </header>

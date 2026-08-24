@@ -1,44 +1,42 @@
 {% extends "base.html" %}
 {% block content %}
-<div style="display:flex;justify-content:space-between;align-items:center">
-  <h1>Campaigns</h1>
-  <a href="/campaigns/new">+ New campaign</a>
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem">
+    <h1 style="font-size:1.3rem;font-weight:800">Campaigns</h1>
+    <a href="/import" class="btn btn-primary">+ New campaign</a>
 </div>
 
-<table>
-  <thead>
-    <tr><th>Name</th><th>Status</th><th>Targets</th><th>Sent</th><th>Replies</th><th>Interested</th><th>Actions</th></tr>
-  </thead>
-  <tbody>
-  {% for c in campaigns %}
-    <tr>
-      <td><strong>{{ c['name'] }}</strong></td>
-      <td><span class="badge badge-{{ c['status'] }}">{{ c['status'] }}</span></td>
-      <td>{{ c['analytics']['targets'] }}</td>
-      <td>{{ c['analytics']['messages_sent'] }}</td>
-      <td>{{ c['analytics']['stopped_replied'] }}</td>
-      <td>{{ c['analytics']['reply_breakdown'].get('interested', 0) }}</td>
-      <td class="actions">
+{% for c in campaigns %}
+<div class="card">
+    <div class="card-title">
+        <a href="#" style="font-size:1.05rem">{{ c['name'] }}</a>
+        <span class="badge badge-{{ c['status'] }}">{{ c['status'] }}</span>
+        <span class="dim" style="margin-left:auto;font-size:0.75rem">ID #{{ c['id'] }}</span>
+    </div>
+    <div class="stats" style="margin:0.75rem 0">
+        <div class="stat" style="padding:0.6rem 1rem"><span class="stat-value" style="font-size:1.3rem">{{ c['analytics']['targets'] }}</span><span class="stat-label">Targets</span></div>
+        <div class="stat" style="padding:0.6rem 1rem"><span class="stat-value blue" style="font-size:1.3rem">{{ c['analytics']['messages_sent'] }}</span><span class="stat-label">Sent</span></div>
+        <div class="stat" style="padding:0.6rem 1rem"><span class="stat-value green" style="font-size:1.3rem">{{ c['analytics']['stopped_replied'] }}</span><span class="stat-label">Replies</span></div>
+        <div class="stat" style="padding:0.6rem 1rem"><span class="stat-value purple" style="font-size:1.3rem">{{ c['analytics']['reply_breakdown'].get('interested', 0) }}</span><span class="stat-label">Interested</span></div>
+        <div class="stat" style="padding:0.6rem 1rem"><span class="stat-value red" style="font-size:1.3rem">{{ c['analytics']['messages_failed'] }}</span><span class="stat-label">Failed</span></div>
+    </div>
+    {% set pct = ((c['analytics']['finished'] / c['analytics']['targets'] * 100) | round) if c['analytics']['targets'] else 0 %}
+    <div class="campaign-progress"><div class="bar" style="width:{{ pct }}%"></div></div>
+    <p class="dim" style="font-size:0.72rem;margin-top:0.4rem">{{ c['analytics']['finished'] }}/{{ c['analytics']['targets'] }} contacts reached ({{ pct }}%)</p>
+    <div class="actions">
         {% if c['status'] != 'active' %}
-        <form method="post" action="/api/campaigns/{{ c['id'] }}/status">
-          <input type="hidden" name="status" value="active">
-          <button type="submit">Activate</button>
-        </form>
+        <form method="post" action="/api/campaigns/{{ c['id'] }}/status"><input type="hidden" name="status" value="active"><button type="submit" class="btn btn-primary btn-sm">Activate</button></form>
         {% else %}
-        <form method="post" action="/api/campaigns/{{ c['id'] }}/status">
-          <input type="hidden" name="status" value="paused">
-          <button type="submit">Pause</button>
-        </form>
-        <form method="post" action="/api/campaigns/{{ c['id'] }}/run-once">
-          <button type="submit">Run due sends now</button>
-        </form>
+        <form method="post" action="/api/campaigns/{{ c['id'] }}/status"><input type="hidden" name="status" value="paused"><button type="submit" class="btn btn-outline btn-sm">Pause</button></form>
+        <form method="post" action="/api/campaigns/{{ c['id'] }}/run-once"><button type="submit" class="btn btn-primary btn-sm">Run due sends now</button></form>
         {% endif %}
-        <form method="post" action="/api/campaigns/{{ c['id'] }}/attach">
-          <button type="submit">Attach contacts</button>
-        </form>
-      </td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
+        <form method="post" action="/api/campaigns/{{ c['id'] }}/attach"><button type="submit" class="btn btn-outline btn-sm">Attach contacts</button></form>
+    </div>
+</div>
+{% endfor %}
+
+{% if not campaigns %}
+<div class="card" style="text-align:center;padding:4rem">
+    <p class="muted">No campaigns yet. Import contacts and create one.</p>
+</div>
+{% endif %}
 {% endblock %}

@@ -1,25 +1,25 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>Pipeline</h1>
+<h1 style="font-size:1.3rem;font-weight:800;margin-bottom:1.5rem">Pipeline</h1>
 <div class="board">
-  {% for stage, leads in stages.items() %}
-  <div class="column">
-    <h3>{{ stage }} <span class="count">{{ leads|length }}</span></h3>
-    {% for lead in leads %}
-    <div class="card">
-      <strong>{{ lead['name'] }}</strong>
-      {% if lead['email'] %}<div class="muted">{{ lead['email'] }}</div>{% endif %}
-      {% if lead['event_name'] %}<div class="event">📅 {{ lead['event_name'] }} — {{ lead['event_date'] }}</div>{% endif %}
-      {% if lead['priority'] == 'high' %}<span class="badge badge-high">🔥 high</span>{% endif %}
-      <form method="post" action="/api/leads/{{ lead['id'] }}/stage" class="stage-form">
-        <select name="stage">
-          {% for s in stages %}<option value="{{ s }}" {% if s == stage %}selected{% endif %}>{{ s }}</option>{% endfor %}
-        </select>
-        <button type="submit">Move</button>
-      </form>
+    {% for stage, leads in stages.items() %}
+    <div class="column">
+        <h3>{{ stage }} <span class="count">{{ leads|length }}</span></h3>
+        {% for lead in leads %}
+        <div class="card">
+            <strong style="font-size:0.88rem">{{ lead['name'] }}</strong>
+            {% if lead['email'] %}<div class="mono muted" style="font-size:0.72rem;margin-top:0.2rem">{{ lead['email'] }}</div>{% endif %}
+            {% if lead['event_name'] %}<div class="event" style="font-size:0.72rem">📅 {{ lead['event_name'] }}{% if lead['event_date'] %} — {{ lead['event_date'] }}{% endif %}</div>{% endif %}
+            {% if lead['priority'] == 'high' %}<span class="badge badge-high" style="margin-top:0.3rem">high</span>{% endif %}
+            <form method="post" action="/api/leads/{{ lead['id'] }}/stage" class="stage-form">
+                <select name="stage">
+                    {% for s in stages %}<option value="{{ s }}" {% if s == stage %}selected{% endif %}>{{ s }}</option>{% endfor %}
+                </select>
+                <button type="submit" class="btn btn-outline btn-xs">Move</button>
+            </form>
+        </div>
+        {% endfor %}
     </div>
     {% endfor %}
-  </div>
-  {% endfor %}
 </div>
 {% endblock %}

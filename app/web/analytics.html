@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 style="font-size:1.3rem;font-weight:800;margin-bottom:1.5rem">Analytics</h1>
+
+<div class="stats">
+    <div class="stat"><span class="stat-value">{{ data.get('total_leads', 0) }}</span><span class="stat-label">Total Leads</span></div>
+    <div class="stat"><span class="stat-value blue">{{ data.get('total_sent', 0) }}</span><span class="stat-label">Emails Sent</span></div>
+    <div class="stat"><span class="stat-value green">{{ data.get('total_replies', 0) }}</span><span class="stat-label">Replies</span></div>
+    <div class="stat"><span class="stat-value purple">{{ data.get('total_interested', 0) }}</span><span class="stat-label">Interested</span></div>
+</div>
+
+<h2 style="font-size:1rem;font-weight:700;margin:1.5rem 0 0.75rem">Daily sends (last 14 days)</h2>
+<div class="card">
+    {% for day in data.get('daily_sends', []) %}
+    <div style="display:flex;justify-content:space-between;padding:0.4rem 0;border-bottom:1px solid var(--border)">
+        <span class="mono" style="font-size:0.82rem">{{ day['day'] }}</span>
+        <span style="font-weight:600">{{ day['sent'] }} sent</span>
+    </div>
+    {% else %}
+    <p class="muted" style="text-align:center;padding:2rem">No sends recorded yet.</p>
+    {% endfor %}
+</div>
+
+<h2 style="font-size:1rem;font-weight:700;margin:1.5rem 0 0.75rem">Campaign breakdown</h2>
+{% for c in data.get('campaigns', []) %}
+<div class="card">
+    <div class="card-title">
+        <strong>{{ c.get('name', 'Campaign #' ~ c['campaign_id']) }}</strong>
+        <span class="dim" style="margin-left:auto;font-size:0.78rem">Sent: {{ c.get('messages_sent', 0) }} | Replies: {{ c.get('stopped_replied', 0) }} | Failed: {{ c.get('messages_failed', 0) }}</span>
+    </div>
+    {% if c.get('reply_breakdown') %}
+    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem">
+        {% for cls, count in c['reply_breakdown'].items() %}
+        <span class="badge badge-{{ cls }}">{{ cls }}: {{ count }}</span>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+{% endfor %}
+{% endblock %}

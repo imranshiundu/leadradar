@@ -339,8 +339,55 @@ async def api_inbox_poll():
 async def api_analytics():
     campaigns = []
     for row in await db.list_campaigns():
-        campaigns.append(await db.campaign_analytics(int(row['id'])))
-    return {'campaigns': campaigns, 'daily_sends': await db.daily_send_stats(14)}
+        campaign = await db.campaign_analytics(int(row['id']))
+        campaign['name'] = dict(row)['name']
+        campaigns.append(campaign)
+    total_leads = len(await db.list_leads(limit=10000))
+    total_sent = sum(c.get('messages_sent', 0) for c in campaigns)
+    total_replies = sum(c.get('stopped_replied', 0) for c in campaigns)
+    total_interested = sum(c.get('reply_breakdown', {}).get('interested', 0) for c in campaigns)
+    return {
+        'campaigns': campaigns,
+        'daily_sends': await db.daily_send_stats(14),
+        'total_leads': total_leads,
+        'total_sent': total_sent,
+        'total_replies': total_replies,
+        'total_interested': total_interested,
+    }
+
+
+@app.get('/analytics', response_class=HTMLResponse)
+async def analytics_page(request: Request):
+    data = await api_analytics()
+    return templates.TemplateResponse('analytics.html', {'request': request, 'data': data})
+
+
+@app.get('/campaigns/new', response_class=HTMLResponse)
+async def campaign_new_page(request: Request):
+    return templates.TemplateResponse('campaign_new.html', {'request': request})
+
+
+@app.post('/api/campaigns/create', dependencies=[Depends(require_token)])
+async def api_create_campaign_form(
+    name: str = Form(...),
+    subject_template: str = Form(...),
+    body_template: str = Form(...),
+    follow_up_1_body: str = Form(''),
+    follow_up_1_days: int = Form(3),
+    follow_up_2_body: str = Form(''),
+    follow_up_2_days: int = Form(7),
+):
+    existing = await db.get_campaign_by_name(name)
+    if existing:
+        raise HTTPException(400, 'Campaign name already exists')
+    cid = await db.create_campaign(name, subject_template, body_template)
+    step = 1
+    if follow_up_1_body.strip():
+        await db.add_sequence_step(cid, step, follow_up_1_days, follow_up_1_body)
+        step += 1
+    if follow_up_2_body.strip():
+        await db.add_sequence_step(cid, step, follow_up_2_days, follow_up_2_body)
+    return RedirectResponse(url='/campaigns', status_code=303)
 
 
 @app.post('/lead/{lead_id}/send-test', dependencies=[Depends(require_token)])

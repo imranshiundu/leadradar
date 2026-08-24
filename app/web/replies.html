@@ -1,20 +1,20 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>Replies</h1>
+<h1 style="font-size:1.3rem;font-weight:800;margin-bottom:1.5rem">Replies</h1>
 <table>
-  <thead><tr><th>From</th><th>Subject</th><th>Class</th><th>Snippet</th><th>Received</th></tr></thead>
-  <tbody>
-  {% for r in replies %}
+    <thead><tr><th>From</th><th>Subject</th><th>Class</th><th>Snippet</th><th>Received</th></tr></thead>
+    <tbody>
+    {% for r in replies %}
     <tr>
-      <td>{{ r['from_email'] }}</td>
-      <td>{{ r['subject'] }}</td>
-      <td><span class="badge badge-{{ r['classification'] }}">{{ r['classification'] }}</span></td>
-      <td class="snippet">{{ (r['snippet'] or '')[:160] }}</td>
-      <td>{{ r['received_at'] }}</td>
+        <td class="mono" style="font-size:0.8rem">{{ r['from_email'] }}</td>
+        <td>{{ r['subject'][:60] }}</td>
+        <td><span class="badge badge-{{ r['classification'] }}">{{ r['classification'] }}</span></td>
+        <td class="snippet muted">{{ (r['snippet'] or '')[:140] }}</td>
+        <td class="dim" style="font-size:0.78rem">{{ (r['received_at'] or '')[:16] }}</td>
     </tr>
-  {% else %}
-    <tr><td colspan="5">No replies matched yet. Poll the inbox from the Import page.</td></tr>
-  {% endfor %}
-  </tbody>
+    {% else %}
+    <tr><td colspan="5" style="text-align:center;padding:3rem" class="muted">No replies matched yet. Poll the inbox from the Import page.</td></tr>
+    {% endfor %}
+    </tbody>
 </table>
 {% endblock %}

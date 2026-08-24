@@ -3,32 +3,45 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LeadRadarSafe | Dashboard</title>
+    <title>LeadRadarSafe Pro | Dashboard</title>
     <link rel="stylesheet" href="/static/styles.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=JetBrains+Mono&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
 <body>
     <div class="container">
         <header class="header">
-            <div class="logo">LeadRadarSafe</div>
+            <a href="/" class="logo">LeadRadar<span class="accent">Safe</span></a>
             <nav>
-                <a href="/" class="btn {% if not status %}btn-primary{% else %}btn-outline{% endif %}">All</a>
-                <a href="/?status=alerted" class="btn {% if status == 'alerted' %}btn-primary{% else %}btn-outline{% endif %}">Alerted</a>
-                <a href="/?status=approved" class="btn {% if status == 'approved' %}btn-primary{% else %}btn-outline{% endif %}">Approved</a>
-                <a href="/?status=sent" class="btn {% if status == 'sent' %}btn-primary{% else %}btn-outline{% endif %}">Sent</a>
+                <a href="/" class="btn btn-primary">Leads</a>
                 <a href="/campaigns" class="btn btn-outline">Campaigns</a>
                 <a href="/pipeline" class="btn btn-outline">Pipeline</a>
                 <a href="/replies" class="btn btn-outline">Replies</a>
+                <a href="/analytics" class="btn btn-outline">Analytics</a>
                 <a href="/import" class="btn btn-primary">+ Import</a>
             </nav>
         </header>
 
         <main>
+            <div class="stats">
+                <div class="stat"><span class="stat-value">{{ leads|length }}</span><span class="stat-label">Total Leads</span></div>
+                <div class="stat"><span class="stat-value green">{{ leads|selectattr('status','equalto','sent')|list|length }}</span><span class="stat-label">Sent</span></div>
+                <div class="stat"><span class="stat-value blue">{{ leads|selectattr('status','equalto','approved')|list|length }}</span><span class="stat-label">Approved</span></div>
+                <div class="stat"><span class="stat-value red">{{ leads|selectattr('status','equalto','rejected')|list|length }}</span><span class="stat-label">Rejected</span></div>
+            </div>
+
+            <div style="display:flex;gap:0.5rem;margin-bottom:1rem;flex-wrap:wrap">
+                <a href="/" class="btn {% if not status %}btn-primary{% else %}btn-outline{% endif %} btn-sm">All</a>
+                <a href="/?status=new" class="btn {% if status=='new' %}btn-primary{% else %}btn-outline{% endif %} btn-sm">New</a>
+                <a href="/?status=alerted" class="btn {% if status=='alerted' %}btn-primary{% else %}btn-outline{% endif %} btn-sm">Alerted</a>
+                <a href="/?status=approved" class="btn {% if status=='approved' %}btn-primary{% else %}btn-outline{% endif %} btn-sm">Approved</a>
+                <a href="/?status=sent" class="btn {% if status=='sent' %}btn-primary{% else %}btn-outline{% endif %} btn-sm">Sent</a>
+            </div>
+
             {% if not leads %}
-            <div class="card" style="text-align: center; padding: 4rem;">
-                <p style="color: var(--text-muted);">No leads found for this status.</p>
+            <div class="card" style="text-align:center;padding:4rem">
+                <p class="muted">No leads found for this status.</p>
             </div>
             {% endif %}
 
@@ -37,42 +50,24 @@
                 <div class="card-title">
                     <a href="/lead/{{ lead.id }}">{{ lead.name }}</a>
                     <span class="badge badge-{{ lead.status }}">{{ lead.status }}</span>
-                    {% if lead.need_score %}
-                    <span style="font-size: 0.875rem; color: var(--text-muted); margin-left: auto;">Score: {{ lead.need_score }}</span>
-                    {% endif %}
+                    {% if lead.priority == 'high' %}<span class="badge badge-high">high</span>{% endif %}
+                    {% if lead.need_score %}<span class="dim" style="margin-left:auto;font-size:0.8rem">Score: {{ lead.need_score }}</span>{% endif %}
                 </div>
-                <p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem;">
-                    {{ lead.ai_summary or "Processing lead details..." }}
-                </p>
-                <div class="meta-grid" style="margin-bottom: 1rem;">
-                    {% if lead.city %}
-                    <div class="meta-item">
-                        <span class="meta-label">Location</span>
-                        <span class="meta-value">{{ lead.city }}</span>
-                    </div>
-                    {% endif %}
-                    {% if lead.business_type %}
-                    <div class="meta-item">
-                        <span class="meta-label">Category</span>
-                        <span class="meta-value">{{ lead.business_type }}</span>
-                    </div>
-                    {% endif %}
-                    {% if lead.source %}
-                    <div class="meta-item">
-                        <span class="meta-label">Source</span>
-                        <span class="meta-value">{{ lead.source }}</span>
-                    </div>
-                    {% endif %}
+                <p class="muted" style="font-size:0.82rem;margin-bottom:0.75rem">{{ lead.ai_summary or lead.raw_text[:120] if lead.raw_text else "No summary yet..." }}</p>
+                <div class="meta-grid">
+                    {% if lead.email %}<div class="meta-item"><span class="meta-label">Email</span><span class="meta-value mono">{{ lead.email }}</span></div>{% endif %}
+                    {% if lead.phone %}<div class="meta-item"><span class="meta-label">Phone</span><span class="meta-value mono">{{ lead.phone }}</span></div>{% endif %}
+                    {% if lead.city %}<div class="meta-item"><span class="meta-label">Location</span><span class="meta-value">{{ lead.city }}</span></div>{% endif %}
+                    {% if lead.event_name %}<div class="meta-item"><span class="meta-label">Event</span><span class="meta-value" style="color:var(--accent-light)">{{ lead.event_name }} {% if lead.event_date %}({{ lead.event_date }}){% endif %}</span></div>{% endif %}
                 </div>
-                <div style="display: flex; gap: 0.5rem; border-top: 1px solid var(--border); padding-top: 1rem;">
-                    <a href="/lead/{{ lead.id }}" class="btn btn-outline" style="padding: 0.4rem 0.8rem; font-size: 0.75rem;">Details</a>
-                    {% if lead.status == 'new' or lead.status == 'alerted' %}
-                    <form action="/lead/{{ lead.id }}/approve" method="post" style="display: inline;">
-                        <button type="submit" class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.75rem;">Approve</button>
-                    </form>
-                    <form action="/lead/{{ lead.id }}/reject" method="post" style="display: inline;">
-                        <button type="submit" class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.75rem;">Reject</button>
-                    </form>
+                <div style="display:flex;gap:0.4rem;border-top:1px solid var(--border);padding-top:0.75rem;margin-top:0.5rem">
+                    <a href="/lead/{{ lead.id }}" class="btn btn-outline btn-sm">Details</a>
+                    {% if lead.status in ('new','alerted') %}
+                    <form action="/lead/{{ lead.id }}/approve" method="post" style="display:inline"><button type="submit" class="btn btn-primary btn-sm">Approve</button></form>
+                    <form action="/lead/{{ lead.id }}/reject" method="post" style="display:inline"><button type="submit" class="btn btn-danger btn-sm">Reject</button></form>
+                    {% endif %}
+                    {% if lead.status == 'approved' %}
+                    <form action="/lead/{{ lead.id }}/send" method="post" style="display:inline"><button type="submit" class="btn btn-primary btn-sm">Send Email</button></form>
                     {% endif %}
                 </div>
             </div>

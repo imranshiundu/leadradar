@@ -3,75 +3,90 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ lead.name }} | Lead Details</title>
+    <title>LeadRadarSafe Pro | {{ lead.name }}</title>
     <link rel="stylesheet" href="/static/styles.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=JetBrains+Mono&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
 <body>
     <div class="container">
-        <a href="/" class="back-link">← Back to Dashboard</a>
+        <header class="header">
+            <a href="/" class="logo">LeadRadar<span class="accent">Safe</span></a>
+            <nav>
+                <a href="/" class="btn btn-outline">Leads</a>
+                <a href="/campaigns" class="btn btn-outline">Campaigns</a>
+                <a href="/pipeline" class="btn btn-outline">Pipeline</a>
+                <a href="/replies" class="btn btn-outline">Replies</a>
+                <a href="/analytics" class="btn btn-outline">Analytics</a>
+                <a href="/import" class="btn btn-primary">+ Import</a>
+            </nav>
+        </header>
 
-        <div class="card">
-            <div class="card-title" style="font-size: 1.75rem; margin-bottom: 0.5rem;">
-                {{ lead.name }}
+        <main>
+            <div style="display:flex;gap:0.75rem;align-items:center;margin-bottom:1.5rem">
+                <a href="/" class="btn btn-outline btn-sm">← Back</a>
                 <span class="badge badge-{{ lead.status }}">{{ lead.status }}</span>
-            </div>
-            <div style="color: var(--text-muted); font-size: 1rem; margin-bottom: 1.5rem;">
-                {% if lead.need_score %}Score: <b>{{ lead.need_score }}/100</b> | {% endif %}
-                Type: {{ lead.opportunity_type }}
+                {% if lead.pipeline_stage %}<span class="badge badge-new">{{ lead.pipeline_stage }}</span>{% endif %}
+                {% if lead.priority == 'high' %}<span class="badge badge-high">high priority</span>{% endif %}
             </div>
 
-            <div class="meta-grid">
-                <div class="meta-item">
-                    <span class="meta-label">Email</span>
-                    <span class="meta-value">{{ lead.email or "—" }}</span>
-                </div>
-                <div class="meta-item">
-                    <span class="meta-label">Phone</span>
-                    <span class="meta-value">{{ lead.phone or "—" }}</span>
-                </div>
-                <div class="meta-item">
-                    <span class="meta-label">Website</span>
-                    <span class="meta-value">{% if lead.website_url %}<a href="{{ lead.website_url }}" target="_blank">{{ lead.website_url }}</a>{% else %}—{% endif %}</span>
-                </div>
-                <div class="meta-item">
-                    <span class="meta-label">Source URL</span>
-                    <span class="meta-value">{% if lead.source_url %}<a href="{{ lead.source_url }}" target="_blank">View Source</a>{% else %}—{% endif %}</span>
-                </div>
+            <h1 style="font-size:1.5rem;font-weight:800;margin-bottom:1.5rem">{{ lead.name }}</h1>
+
+            <div class="meta-grid" style="margin-bottom:1.5rem">
+                {% if lead.email %}<div class="meta-item"><span class="meta-label">Email</span><span class="meta-value mono">{{ lead.email }}</span></div>{% endif %}
+                {% if lead.phone %}<div class="meta-item"><span class="meta-label">Phone</span><span class="meta-value mono">{{ lead.phone }}</span></div>{% endif %}
+                {% if lead.city %}<div class="meta-item"><span class="meta-label">Location</span><span class="meta-value">{{ lead.city }}</span></div>{% endif %}
+                {% if lead.source %}<div class="meta-item"><span class="meta-label">Source</span><span class="meta-value">{{ lead.source }}</span></div>{% endif %}
+                {% if lead.business_type %}<div class="meta-item"><span class="meta-label">Type</span><span class="meta-value">{{ lead.business_type }}</span></div>{% endif %}
+                {% if lead.need_score %}<div class="meta-item"><span class="meta-label">Score</span><span class="meta-value">{{ lead.need_score }}/100</span></div>{% endif %}
+                {% if lead.event_name %}<div class="meta-item"><span class="meta-label">Event</span><span class="meta-value" style="color:var(--accent-light)">{{ lead.event_name }}{% if lead.event_date %} — {{ lead.event_date }}{% endif %}</span></div>{% endif %}
+                <div class="meta-item"><span class="meta-label">Created</span><span class="meta-value dim">{{ lead.created_at }}</span></div>
             </div>
-        </div>
 
-        <div class="card">
-            <div class="card-title">AI Analysis</div>
-            <p style="margin-bottom: 1.5rem;">{{ lead.ai_summary or "No summary available." }}</p>
-            
-            <span class="meta-label">Reasoning</span>
-            <p style="font-size: 0.875rem; color: var(--text-muted);">{{ lead.ai_reason or "N/A" }}</p>
-        </div>
+            {% if lead.ai_summary %}
+            <div class="card">
+                <h3 style="font-size:0.8rem;font-weight:700;color:var(--text-dim);margin-bottom:0.5rem">AI Summary</h3>
+                <p>{{ lead.ai_summary }}</p>
+                {% if lead.ai_reason %}<p class="dim" style="margin-top:0.5rem;font-size:0.82rem">Reason: {{ lead.ai_reason }}</p>{% endif %}
+            </div>
+            {% endif %}
 
-        <div class="card" style="border-left: 4px solid var(--primary);">
-            <div class="card-title">Personalized Outreach Draft</div>
-            <div class="draft-box" id="draft-content">{{ lead.draft_message or "AI has not generated a draft for this lead." }}</div>
-            
-            <div style="display: flex; gap: 1rem;">
-                <form action="/lead/{{ lead.id }}/approve" method="post">
-                    <button type="submit" class="btn btn-primary">Approve Lead</button>
+            {% if lead.raw_text %}
+            <div class="card">
+                <h3 style="font-size:0.8rem;font-weight:700;color:var(--text-dim);margin-bottom:0.5rem">Raw Text</h3>
+                <pre class="mono" style="font-size:0.78rem;white-space:pre-wrap;color:var(--text-muted)">{{ lead.raw_text }}</pre>
+            </div>
+            {% endif %}
+
+            {% if lead.draft_message %}
+            <div class="card">
+                <h3 style="font-size:0.8rem;font-weight:700;color:var(--text-dim);margin-bottom:0.5rem">Draft Message</h3>
+                <pre class="mono" style="font-size:0.78rem;white-space:pre-wrap">{{ lead.draft_message }}</pre>
+            </div>
+            {% endif %}
+
+            <div style="display:flex;gap:0.5rem;margin-top:1.5rem">
+                {% if lead.status in ('new','alerted') %}
+                <form action="/lead/{{ lead.id }}/approve" method="post"><button type="submit" class="btn btn-primary">Approve</button></form>
+                <form action="/lead/{{ lead.id }}/reject" method="post"><button type="submit" class="btn btn-danger">Reject</button></form>
+                {% endif %}
+                {% if lead.status == 'approved' %}
+                <form action="/lead/{{ lead.id }}/send" method="post"><button type="submit" class="btn btn-primary">Send Email</button></form>
+                {% endif %}
+                <form method="post" action="/api/leads/{{ lead.id }}/stage" style="display:flex;gap:0.35rem">
+                    <select name="stage">
+                        <option value="new" {% if lead.pipeline_stage == 'new' %}selected{% endif %}>new</option>
+                        <option value="contacted" {% if lead.pipeline_stage == 'contacted' %}selected{% endif %}>contacted</option>
+                        <option value="replied" {% if lead.pipeline_stage == 'replied' %}selected{% endif %}>replied</option>
+                        <option value="meeting" {% if lead.pipeline_stage == 'meeting' %}selected{% endif %}>meeting</option>
+                        <option value="won" {% if lead.pipeline_stage == 'won' %}selected{% endif %}>won</option>
+                        <option value="lost" {% if lead.pipeline_stage == 'lost' %}selected{% endif %}>lost</option>
+                    </select>
+                    <button type="submit" class="btn btn-outline btn-sm">Update stage</button>
                 </form>
-                <form action="/lead/{{ lead.id }}/send" method="post">
-                    <button type="submit" class="btn btn-outline" {% if lead.status != 'approved' %}disabled title="Approve lead first"{% endif %}>Send Email Now</button>
-                </form>
-                <form action="/lead/{{ lead.id }}/reject" method="post">
-                    <button type="submit" class="btn btn-danger">Reject</button>
-                </form>
             </div>
-        </div>
-
-        <div class="card">
-            <div class="card-title">Raw Public Text</div>
-            <div class="raw-text-box">{{ lead.raw_text or "No raw text available." }}</div>
-        </div>
+        </main>
     </div>
 </body>
 </html>
