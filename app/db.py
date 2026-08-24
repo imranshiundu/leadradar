@@ -115,6 +115,24 @@ class Database:
                     fetched_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS contact_history (
+                    email TEXT PRIMARY KEY,
+                    last_channel TEXT,
+                    last_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS outreach_drafts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    lead_id INTEGER REFERENCES leads(id),
+                    to_email TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    channel TEXT NOT NULL DEFAULT 'gmail_draft',
+                    created_at TEXT NOT NULL,
+                    decided_at TEXT
+                );
+
                 CREATE TABLE IF NOT EXISTS campaigns (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
@@ -297,6 +315,18 @@ class Database:
         for col, decl in additions.items():
             if col not in existing_cols:
                 await db.execute(f'ALTER TABLE leads ADD COLUMN {col} {decl}')
+
+        cur = await db.execute('PRAGMA table_info(inbox_messages)')
+        inbox_cols = {r['name'] for r in await cur.fetchall()}
+        for col, decl in {
+            'body': 'TEXT',
+            'is_read': 'INTEGER NOT NULL DEFAULT 0',
+            'starred': 'INTEGER NOT NULL DEFAULT 0',
+            'group_key': 'TEXT',
+        }.items():
+            if col not in inbox_cols:
+                await db.execute(f'ALTER TABLE inbox_messages ADD COLUMN {col} {decl}')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_inbox_group ON inbox_messages(group_key)')
         await db.commit()
 
     async def insert_lead(self, lead: LeadCreate) -> tuple[int | None, bool]:
@@ -974,11 +1004,11 @@ class Database:
         async with self.connect() as db:
             cur = await db.execute(
                 '''INSERT OR IGNORE INTO inbox_messages
-                   (message_id, from_name, from_email, subject, date_utc, snippet, lead_id, fetched_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                   (message_id, from_name, from_email, subject, date_utc, snippet, lead_id, group_key, fetched_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                 (msg['message_id'], msg.get('from_name'), msg.get('from_email'),
                  msg.get('subject'), msg.get('date_utc'), msg.get('snippet'),
-                 msg.get('lead_id'), utc_now()))
+                 msg.get('lead_id'), msg.get('group_key'), utc_now()))
             await db.commit()
             return cur.rowcount > 0
 
@@ -1005,3 +1035,122 @@ class Database:
             db.row_factory = aiosqlite.Row
             cur = await db.execute('SELECT COUNT(*) AS n FROM inbox_messages')
             return int((await cur.fetchone())['n'])
+
+    # ------------------------------------------------------------------
+    # Inbox: full body, read/star flags
+    # ------------------------------------------------------------------
+
+    async def get_inbox_message(self, msg_id: int) -> dict | None:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                '''SELECT m.*, l.name AS lead_name FROM inbox_messages m
+                   LEFT JOIN leads l ON l.id=m.lead_id WHERE m.id=?''', (msg_id,))
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+    async def get_inbox_by_message_id(self, message_id: str) -> dict | None:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute('SELECT * FROM inbox_messages WHERE message_id=?', (message_id,))
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+    async def set_inbox_body(self, msg_id: int, body: str) -> None:
+        async with self.connect() as db:
+            await db.execute('UPDATE inbox_messages SET body=? WHERE id=?', (body, msg_id))
+            await db.commit()
+
+    async def set_inbox_flag(self, msg_id: int, field: str, value: int) -> None:
+        if field not in ('is_read', 'starred'):
+            return
+        async with self.connect() as db:
+            await db.execute(f'UPDATE inbox_messages SET {field}=? WHERE id=?', (value, msg_id))
+            await db.commit()
+
+    async def mark_all_inbox_read(self) -> int:
+        async with self.connect() as db:
+            cur = await db.execute('UPDATE inbox_messages SET is_read=1 WHERE is_read=0')
+            await db.commit()
+            return cur.rowcount or 0
+
+    async def delete_inbox_message(self, msg_id: int) -> None:
+        async with self.connect() as db:
+            await db.execute('DELETE FROM inbox_messages WHERE id=?', (msg_id,))
+            await db.commit()
+
+    async def unread_inbox_count(self) -> int:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute('SELECT COUNT(*) AS n FROM inbox_messages WHERE is_read=0')
+            return int((await cur.fetchone())['n'])
+
+    # ------------------------------------------------------------------
+    # Contact history (anti-repeat cooldown)
+    # ------------------------------------------------------------------
+
+    async def was_recently_contacted(self, email: str, cooldown_days: int) -> bool:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute('SELECT last_at FROM contact_history WHERE lower(email)=lower(?)', (email,))
+            row = await cur.fetchone()
+            if not row:
+                return False
+            last = datetime.fromisoformat(dict(row)['last_at'])
+            return (datetime.now(timezone.utc) - last).days < cooldown_days
+
+    async def touch_contact(self, email: str, channel: str) -> None:
+        async with self.connect() as db:
+            await db.execute(
+                '''INSERT INTO contact_history(email, last_channel, last_at) VALUES (?, ?, ?)
+                   ON CONFLICT(email) DO UPDATE SET last_channel=excluded.last_channel, last_at=excluded.last_at''',
+                (email.lower(), channel, utc_now()))
+            await db.commit()
+
+    # ------------------------------------------------------------------
+    # Outreach drafts (discovery -> Gmail draft -> approve -> send)
+    # ------------------------------------------------------------------
+
+    async def create_outreach_draft(self, lead_id: int | None, to_email: str,
+                                    subject: str, body: str, channel: str = 'gmail_draft') -> int:
+        async with self.connect() as db:
+            cur = await db.execute(
+                '''INSERT INTO outreach_drafts(lead_id, to_email, subject, body, status, channel, created_at)
+                   VALUES (?, ?, ?, ?, 'pending', ?, ?)''',
+                (lead_id, to_email.lower(), subject, body, channel, utc_now()))
+            await db.commit()
+            return int(cur.lastrowid)
+
+    async def list_outreach_drafts(self, status: str | None = None, limit: int = 100) -> list[dict]:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            q = '''SELECT d.*, l.name AS lead_name FROM outreach_drafts d
+                   LEFT JOIN leads l ON l.id=d.lead_id'''
+            args: list = []
+            if status:
+                q += ' WHERE d.status=?'
+                args.append(status)
+            q += ' ORDER BY d.created_at DESC LIMIT ?'
+            args.append(limit)
+            cur = await db.execute(q, tuple(args))
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def get_outreach_draft(self, draft_id: int) -> dict | None:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute('SELECT * FROM outreach_drafts WHERE id=?', (draft_id,))
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+    async def set_outreach_draft_status(self, draft_id: int, status: str) -> None:
+        async with self.connect() as db:
+            await db.execute('UPDATE outreach_drafts SET status=?, decided_at=? WHERE id=?',
+                             (status, utc_now(), draft_id))
+            await db.commit()
+
+    async def has_pending_draft_for(self, email: str) -> bool:
+        async with self.connect() as db:
+            cur = await db.execute(
+                "SELECT 1 FROM outreach_drafts WHERE lower(to_email)=lower(?) AND status='pending' LIMIT 1",
+                (email,))
+            return await cur.fetchone() is not None

@@ -53,3 +53,39 @@ def _mk_lead():
     from app.models import LeadCreate
     return LeadCreate(source='test', name='Bigmiitch Events', email='info@bigmiitchevents.co.ke',
                       fingerprint='fp-inbox-test-1')
+
+
+async def test_cooldown_and_drafts(tmp_path):
+    db = Database(str(tmp_path / 't.db'))
+    await db.init()
+    assert not await db.was_recently_contacted('a@x.co', 30)
+    await db.touch_contact('a@x.co', 'draft')
+    assert await db.was_recently_contacted('A@X.CO', 30)
+    assert not await db.was_recently_contacted('a@x.co', 0)
+
+    lead_id, _ = await db.insert_lead(_mk_lead())
+    did = await db.create_outreach_draft(lead_id, 'info@bigmiitchevents.co.ke', 'Sub', 'Body')
+    assert await db.has_pending_draft_for('INFO@bigmiitchevents.co.ke')
+    drafts = await db.list_outreach_drafts(status='pending')
+    assert drafts[0]['lead_name'] == 'Bigmiitch Events'
+    await db.set_outreach_draft_status(did, 'sent')
+    assert not await db.has_pending_draft_for('info@bigmiitchevents.co.ke')
+
+
+async def test_inbox_flags_and_body(tmp_path):
+    db = Database(str(tmp_path / 't.db'))
+    await db.init()
+    msg = {'message_id': '<z@z>', 'from_email': 'a@b.c', 'subject': 'Re: Hello',
+           'date_utc': '2026-08-24T10:00:00+00:00', 'snippet': 's', 'group_key': 'a@b.c|hello'}
+    await db.upsert_inbox_message(msg)
+    row = (await db.list_inbox(5))[0]
+    assert row['group_key'] == 'a@b.c|hello' and row['is_read'] == 0
+    await db.set_inbox_body(row['id'], 'full body text')
+    got = await db.get_inbox_message(row['id'])
+    assert got['body'] == 'full body text'
+    await db.set_inbox_flag(row['id'], 'starred', 1)
+    await db.set_inbox_flag(row['id'], 'is_read', 1)
+    got = await db.get_inbox_message(row['id'])
+    assert got['starred'] == 1 and got['is_read'] == 1
+    n = await db.mark_all_inbox_read()
+    assert n == 0

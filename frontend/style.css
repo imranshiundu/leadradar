@@ -308,15 +308,28 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 .auth-err svg{width:14px;height:14px}
 
 /* inbox */
-.mail-row{padding:13px 18px;border-bottom:1px solid var(--line);cursor:default;transition:background .1s}
+.mail-row{padding:13px 18px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .1s}
 .mail-row:hover{background:var(--raised)}
 .mail-row.linked{cursor:pointer}
 .mail-row:last-child{border-bottom:none}
-.mail-top{display:flex;align-items:center;gap:10px}
+.mail-row.sub{padding:9px 18px 9px 52px;background:var(--surface)}
+.mail-row.unread .mail-from,.mail-row.unread .mail-subject{font-weight:800}
+.unread-dot{width:7px;height:7px;border-radius:50%;background:var(--acc);flex-shrink:0}
+.thread-head{background:var(--surface)}
+.thread-head:hover{background:var(--hover)}
+.mail-top{display:flex;align-items:center;gap:10px;min-width:0}
 .mail-from{font-weight:700;font-size:.85rem;flex-shrink:0;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mail-date{margin-left:auto;font-size:.66rem;flex-shrink:0}
-.mail-subject{font-size:.83rem;margin-top:2px;color:var(--text)}
+.mail-subject{font-size:.83rem;margin-top:2px;color:var(--text);min-width:0}
 .mail-snip{font-size:.76rem;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.avatar.sm{width:24px;height:24px;font-size:.55rem;border-radius:7px}
+.mail-body-wrap{margin-top:16px;padding:14px;background:var(--bg);border:1px solid var(--line);border-radius:var(--r-sm);max-height:46vh;overflow-y:auto}
+.mail-body{font-family:var(--font);font-size:.84rem;line-height:1.65;white-space:pre-wrap;word-break:break-word;color:var(--text)}
+
+/* notifications */
+.bell-dot{position:absolute;top:-3px;right:-4px;background:var(--red);color:#fff;font-size:.52rem;font-weight:800;min-width:14px;height:14px;border-radius:8px;display:flex;align-items:center;justify-content:center;padding:0 3px;border:2px solid var(--bg)}
+.notif-panel{position:absolute;top:50px;right:16px;width:340px;background:var(--surface);border:1px solid var(--line2);border-radius:var(--r);box-shadow:0 20px 50px rgba(0,0,0,.5);z-index:90;animation:zoom .18s var(--ease);overflow:hidden}
+.notif-mask{position:fixed;inset:0;z-index:80}
 
 @media(max-width:800px){
   .auth-wrap{grid-template-columns:1fr}

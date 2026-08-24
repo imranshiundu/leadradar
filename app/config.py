@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     admin_email: str = 'Imranshiundu@gmail.com'
     admin_password: str | None = None
 
+    # Anti-repeat outreach guard.
+    contact_cooldown_days: int = 30
+
     auto_send_emails: bool = False
     require_manual_approval: bool = True
     respect_robots_txt: bool = True

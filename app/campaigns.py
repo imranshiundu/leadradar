@@ -84,6 +84,9 @@ async def process_due_sends(db: Database, sender=None) -> dict:
             if await db.is_opted_out(email):
                 await db.advance_campaign_lead(int(cl['id']), int(cl['current_step']), None, True, 'opted_out')
                 continue
+            if int(cl['current_step']) == 0 and await db.was_recently_contacted(email, s.contact_cooldown_days):
+                summary['skipped'] += 1
+                continue
 
             current_step = int(cl['current_step'])
             subject_tpl = campaign['subject_template']
@@ -116,6 +119,7 @@ async def process_due_sends(db: Database, sender=None) -> dict:
                 await db.record_message(lead_id, int(campaign['id']), step_order,
                                         email, subject, body,
                                         message_id=message_id, status='sent')
+                await db.touch_contact(email, 'sent')
                 await db.add_event('email:sent', {
                     'to': email, 'campaign_id': campaign['id'], 'step': step_order}, lead_id)
                 if current_step == 0:

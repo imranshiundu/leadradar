@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 
@@ -110,6 +111,7 @@ async def health():
         'groq_configured': bool(settings.groq_api_key),
         'search_configured': bool(settings.brave_search_api_key),
         'auth_required': bool(settings.auth_enabled),
+        'cooldown_days': settings.contact_cooldown_days,
     }
 
 
@@ -188,6 +190,183 @@ async def api_inbox_sync():
 async def api_inbox_list(limit: int = 100):
     messages = await db.list_inbox(limit=min(limit, 300))
     return {'messages': messages}
+
+
+@app.get('/api/inbox/{msg_id}')
+async def api_inbox_detail(msg_id: int):
+    msg = await db.get_inbox_message(msg_id)
+    if not msg:
+        raise HTTPException(404, 'Message not found')
+    if not msg.get('body'):
+        try:
+            body = await asyncio.to_thread(inbox_sync.fetch_full_body, msg['message_id'])
+            if body:
+                await db.set_inbox_body(msg_id, body)
+                msg['body'] = body
+        except Exception:  # noqa: BLE001
+            pass
+    return {'message': msg}
+
+
+@app.post('/api/inbox/{msg_id}/flags')
+async def api_inbox_flags(msg_id: int, request: Request):
+    body = await request.json()
+    msg = await db.get_inbox_message(msg_id)
+    if not msg:
+        raise HTTPException(404, 'Message not found')
+    read = body.get('read')
+    starred = body.get('starred')
+    if read is not None:
+        await db.set_inbox_flag(msg_id, 'is_read', 1 if read else 0)
+        try:
+            await asyncio.to_thread(inbox_sync.imap_set_read, msg['message_id'], bool(read))
+        except Exception:  # noqa: BLE001
+            pass
+    if starred is not None:
+        await db.set_inbox_flag(msg_id, 'starred', 1 if starred else 0)
+    return {'ok': True}
+
+
+@app.post('/api/inbox/read-all')
+async def api_inbox_read_all():
+    n = await db.mark_all_inbox_read()
+    return {'ok': True, 'marked': n}
+
+
+@app.post('/api/inbox/{msg_id}/trash')
+async def api_inbox_trash(msg_id: int):
+    msg = await db.get_inbox_message(msg_id)
+    if not msg:
+        raise HTTPException(404, 'Message not found')
+    try:
+        await asyncio.to_thread(inbox_sync.imap_trash, msg['message_id'])
+    except Exception:  # noqa: BLE001
+        pass
+    await db.delete_inbox_message(msg_id)
+    return {'ok': True}
+
+
+@app.get('/api/notifications')
+async def api_notifications():
+    unread = await db.unread_inbox_count()
+    recent_mail = [m for m in await db.list_inbox(limit=30) if not m.get('is_read')][:8]
+    interested = [r for r in (await db.list_replies(limit=50)) if r['keyword'] == 'interested'][:5]
+    return {
+        'unread_inbox': unread,
+        'items': [
+            {'type': 'mail', 'title': m.get('from_name') or m.get('from_email'),
+             'detail': m.get('subject'), 'at': m.get('date_utc'),
+             'lead_id': m.get('lead_id'), 'inbox_id': m.get('id')}
+            for m in recent_mail
+        ] + [
+            {'type': 'interested', 'title': 'Interested reply',
+             'detail': r.get('from_email') or r.get('to_email'), 'at': r.get('received_at') or r.get('sent_at')}
+            for r in interested
+        ],
+    }
+
+
+@app.post('/api/drafts/compose')
+async def api_compose_to_gmail(request: Request):
+    """Save a composed email into the admin's Gmail Drafts folder."""
+    body = await request.json()
+    to_addr = (body.get('to') or '').strip()
+    subject = (body.get('subject') or '(no subject)').strip()
+    text = body.get('body') or ''
+    if not to_addr:
+        raise HTTPException(400, 'Recipient required')
+    try:
+        await asyncio.to_thread(auth.append_draft, to_addr, subject, text)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f'Could not save draft: {exc}')
+    await db.add_event('draft:composed', {'to': to_addr, 'subject': subject[:80]})
+    return {'ok': True, 'message': 'Draft saved in Gmail'}
+
+
+@app.get('/api/outreach-drafts')
+async def api_outreach_drafts(status: str | None = None):
+    drafts = await db.list_outreach_drafts(status=status)
+    return {'drafts': drafts}
+
+
+@app.post('/api/outreach-drafts/run-discovery')
+async def api_run_discovery_drafts(request: Request):
+    """Create outreach emails for qualified leads and drop them in Gmail Drafts.
+    Never contacts an address twice within contact_cooldown_days."""
+    body = await request.json() if await request.body() else {}
+    limit = min(int(body.get('limit') or 10), 25)
+    cooldown = settings.contact_cooldown_days
+
+    created, skipped_cooldown, skipped_pending, skipped_other = 0, 0, 0, 0
+    for row in await db.list_leads(limit=2000):
+        if created >= limit:
+            break
+        lead = dict(row)
+        email_addr = lead.get('email')
+        if not email_addr:
+            skipped_other += 1
+            continue
+        if lead.get('status') == 'opted_out' or await db.is_opted_out(email_addr):
+            skipped_other += 1
+            continue
+        if await db.was_recently_contacted(email_addr, cooldown):
+            skipped_cooldown += 1
+            continue
+        if await db.has_pending_draft_for(email_addr):
+            skipped_pending += 1
+            continue
+
+        name = lead.get('name') or 'there'
+        event = lead.get('event_name')
+        subject = f'{name} — partnership on your next event' if event else f'{name} — quick question'
+        draft_body = lead.get('draft_message') or (
+            f"Hi {name} team,\n\n"
+            "I'm Imran, founder of Taptap (https://taptap.africa) — QR code and wristband "
+            "ticketing with built-in payments for events.\n\n"
+            + (f"I saw you're behind {event}. " if event else '')
+            + "We're onboarding a small group of organizers ahead of the next season and I'd "
+              "love to show you how entry and payments look on Taptap.\n\n"
+            "Worth a short call this week?\n\nImran\nhttps://taptap.africa")
+        try:
+            await asyncio.to_thread(auth.append_draft, email_addr, subject, draft_body)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(502, f'Gmail draft failed at "{name}": {exc}')
+        await db.create_outreach_draft(int(lead['id']), email_addr, subject, draft_body)
+        await db.touch_contact(email_addr, 'draft')
+        created += 1
+
+    await db.add_event('discovery:drafted', {
+        'created': created, 'skipped_cooldown': skipped_cooldown,
+        'skipped_pending': skipped_pending})
+    return {'ok': True, 'created': created, 'skipped_cooldown': skipped_cooldown,
+            'skipped_pending': skipped_pending, 'cooldown_days': cooldown,
+            'message': f'{created} outreach drafts saved in Gmail — review then approve here.'}
+
+
+@app.post('/api/outreach-drafts/{draft_id}/approve')
+async def api_approve_draft(draft_id: int):
+    d = await db.get_outreach_draft(draft_id)
+    if not d:
+        raise HTTPException(404, 'Draft not found')
+    if d['status'] != 'pending':
+        raise HTTPException(400, f'Draft already {d["status"]}')
+    from app.outreach.emailer import send_email_with_id
+    mid = await send_email_with_id(d['to_email'], d['subject'], d['body'])
+    await db.set_outreach_draft_status(draft_id, 'sent')
+    await db.touch_contact(d['to_email'], 'sent')
+    if d.get('lead_id'):
+        await db.log_activity(int(d['lead_id']), None, 'outreach_sent', d['subject'][:100])
+    await db.add_event('outreach:sent', {'draft_id': draft_id, 'to': d['to_email'], 'message_id': mid})
+    return {'ok': True, 'message_id': mid}
+
+
+@app.post('/api/outreach-drafts/{draft_id}/discard')
+async def api_discard_draft(draft_id: int):
+    d = await db.get_outreach_draft(draft_id)
+    if not d:
+        raise HTTPException(404, 'Draft not found')
+    await db.set_outreach_draft_status(draft_id, 'discarded')
+    return {'ok': True}
 
 
 @app.get('/', response_class=HTMLResponse)

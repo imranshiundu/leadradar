@@ -14,6 +14,16 @@ from app.db import Database
 
 _TAG = re.compile(r'<[^>]+>')
 _WS = re.compile(r'\s+')
+_RE_PREFIX = re.compile(r'^\s*((re|fwd|fw)\s*:\s*)+', re.IGNORECASE)
+
+
+def normalize_subject(subject: str | None) -> str:
+    s = _RE_PREFIX.sub('', (subject or '').strip()).lower()
+    return _WS.sub(' ', s)
+
+
+def make_group_key(from_email: str | None, subject: str | None) -> str:
+    return f'{(from_email or "unknown").strip().lower()}|{normalize_subject(subject)}'
 
 
 def _decode(raw: str | None) -> str:
@@ -106,6 +116,7 @@ def fetch_recent(limit: int = 60) -> list[dict]:
                 'subject': subject or '(no subject)',
                 'date_utc': date_utc,
                 'snippet': snippet,
+                'group_key': make_group_key(from_email, subject),
             })
     finally:
         try:
@@ -113,6 +124,98 @@ def fetch_recent(limit: int = 60) -> list[dict]:
         except Exception:  # noqa: BLE001
             pass
     return out
+
+
+def _find_uid(mail: imaplib.IMAP4_SSL, message_id: str) -> bytes | None:
+    status, data = mail.search(None, '(HEADER Message-ID "%s")' % message_id.replace('"', ''))
+    if status != 'OK' or not data or not data[0]:
+        return None
+    uids = data[0].split()
+    return uids[-1] if uids else None
+
+
+def fetch_full_body(message_id: str) -> str:
+    """Fetch the full readable text of a message by Message-ID (blocking)."""
+    s = get_settings()
+    mail = imaplib.IMAP4_SSL(s.imap_host, s.imap_port)
+    try:
+        mail.login(s.smtp_username, s.smtp_app_password)
+        mail.select('INBOX', readonly=True)
+        uid = _find_uid(mail, message_id)
+        if not uid:
+            return ''
+        status, parts = mail.fetch(uid, '(BODY.PEEK[])')
+        if status != 'OK' or not parts:
+            return ''
+        raw = b''.join(p[1] for p in parts if isinstance(p, tuple))
+        msg = email.message_from_bytes(raw)
+        texts: list[str] = []
+
+        def walk(part):
+            ct = part.get_content_type()
+            if part.is_multipart():
+                preferred = [p for p in part.get_payload() if p.get_content_type() == 'text/plain']
+                for p in (preferred or part.get_payload()):
+                    walk(p)
+            elif ct.startswith('text/'):
+                payload = part.get_payload(decode=True) or b''
+                text = _snippet_from_bytes(payload, ct)
+                if text:
+                    texts.append(text)
+
+        walk(msg)
+        return '\n\n'.join(texts)[:20000]
+    finally:
+        try:
+            mail.logout()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def imap_set_read(message_id: str, read: bool) -> bool:
+    s = get_settings()
+    mail = imaplib.IMAP4_SSL(s.imap_host, s.imap_port)
+    try:
+        mail.login(s.smtp_username, s.smtp_app_password)
+        mail.select('INBOX')
+        uid = _find_uid(mail, message_id)
+        if not uid:
+            return False
+        flag = '+FLAGS' if read else '-FLAGS'
+        mail.store(uid, f'{flag} (\\Seen)')
+        return True
+    finally:
+        try:
+            mail.logout()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def imap_trash(message_id: str) -> bool:
+    """Move a message to Gmail trash."""
+    s = get_settings()
+    mail = imaplib.IMAP4_SSL(s.imap_host, s.imap_port)
+    try:
+        mail.login(s.smtp_username, s.smtp_app_password)
+        typ, _ = mail.select('INBOX')
+        uid = _find_uid(mail, message_id)
+        if not uid:
+            return False
+        if typ == 'OK':
+            try:
+                mail.uid('MOVE', uid.decode(), '[Gmail]/Trash')
+                return True
+            except Exception:  # noqa: BLE001
+                pass
+        mail.copy(uid, '[Gmail]/Trash')
+        mail.store(uid, '+FLAGS (\\Deleted)')
+        mail.expunge()
+        return True
+    finally:
+        try:
+            mail.logout()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 async def sync_inbox(db: Database, limit: int = 60) -> dict:

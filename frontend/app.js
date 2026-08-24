@@ -87,6 +87,15 @@ const App = {
       inboxMsgs: [],
       inboxLoading: false,
       inboxQ: '',
+      inboxFilter: 'all',
+      groupThreads: true,
+      openThreads: {},
+      notifOpen: false,
+      notifications: [],
+      unreadInbox: 0,
+      drafts: [],
+      draftFilter: 'pending',
+      cooldownDays: 30,
       _inboxSynced: false,
     };
   },
@@ -172,6 +181,9 @@ const App = {
       if (e.key === '/' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); const s = this.$refs.search; s && s.focus(); }
     });
     this.boot();
+    this.loadNotifications();
+    setInterval(() => { if (this.sess || !this.authRequired) this.loadNotifications(); }, 45000);
+    setTimeout(() => this.askNotifyPermission(), 3000);
     setInterval(() => { this.auto = Automations.load(); }, 4000);
     setInterval(() => { if (this.auto.pollInbox) { this.pollInbox(true); this._inboxSilent = true; this.syncInbox(); this._inboxSilent = false; } }, 15 * 60000);
     setInterval(() => { if (this.auto.autoRefresh && ['/','/leads','/campaigns','/replies','/inbox'].includes(this.route)) this.routeData().catch(()=>{}); }, 30000);
@@ -190,10 +202,20 @@ const App = {
     stageColor(s) {
       return { new: '#60a5fa', contacted: '#fbbf24', replied: '#34d399', meeting: '#34d399', won: '#34d399', lost: '#f87171' }[s] || '#5f6b63';
     },
+    openNotif(n) {
+      this.notifOpen = false;
+      if (n.inbox_id != null) {
+        const m = this.inboxMsgs.find(x => x.id === n.inbox_id);
+        if (m) return this.openMail(m);
+      }
+      if (n.lead_id) return this.openLeadById(n.lead_id);
+      this.go('/inbox');
+    },
     async boot() {
       try {
         const h = await GET('/health');
         this.authRequired = !!h.auth_required;
+        this.cooldownDays = h.cooldown_days || 30;
         this.conn = 'ok';
       } catch (e) { this.conn = 'err'; }
       if (this.authRequired && !this.sess) { this.needAuth = true; return; }
@@ -250,21 +272,120 @@ const App = {
     },
     async syncInbox() {
       this.inboxLoading = true;
+      const before = this.inboxMsgs.length ? this.inboxMsgs[0].message_id : '';
       try {
         const r = await POSTJ('/api/inbox/sync', {});
         await this.loadInbox();
+        await this.loadNotifications();
         if (!this._inboxSilent) this.toast('Synced ' + r.fetched + ' emails (' + r.new + ' new)');
+        else if (r.new > 0 && this.inboxMsgs.length && this.inboxMsgs[0].message_id !== before && this.auto.pollInbox) {
+          this.browserNotify(r.new + ' new email' + (r.new > 1 ? 's' : ''), (this.inboxMsgs[0] || {}).subject || '');
+        }
         this._inboxSynced = true;
       } catch (e) { if (!this._inboxSilent) this.toast(e.message, true); }
       this.inboxLoading = false;
     },
     async loadInbox() {
-      try { this.inboxMsgs = (await GET('/api/inbox?limit=100')).messages || []; } catch (e) {}
+      try { this.inboxMsgs = (await GET('/api/inbox?limit=200')).messages || []; } catch (e) {}
     },
     filteredInbox() {
+      let rows = this.inboxMsgs;
       const q = this.inboxQ.trim().toLowerCase();
-      if (!q) return this.inboxMsgs;
-      return this.inboxMsgs.filter(m => [m.from_name, m.from_email, m.subject, m.snippet].some(v => (v || '').toLowerCase().includes(q)));
+      if (q) rows = rows.filter(m => [m.from_name, m.from_email, m.subject, m.snippet].some(v => (v || '').toLowerCase().includes(q)));
+      if (this.inboxFilter === 'unread') rows = rows.filter(m => !m.is_read);
+      if (this.inboxFilter === 'starred') rows = rows.filter(m => m.starred);
+      if (this.inboxFilter === 'leads') rows = rows.filter(m => m.lead_id);
+      return rows;
+    },
+    threadGroups() {
+      const rows = this.filteredInbox();
+      if (!this.groupThreads) return null;
+      const groups = new Map();
+      for (const m of rows) {
+        const k = m.group_key || ((m.from_email || '') + '|' + (m.subject || ''));
+        if (!groups.has(k)) groups.set(k, { key: k, from: m.from_name || m.from_email, subject: m.subject, msgs: [], lead_id: m.lead_id });
+        const g = groups.get(k);
+        g.msgs.push(m);
+        if (!g.lead_id && m.lead_id) g.lead_id = m.lead_id;
+      }
+      const list = [...groups.values()];
+      list.forEach(g => g.msgs.sort((a, b) => (b.date_utc || '').localeCompare(a.date_utc || '')));
+      list.sort((a, b) => (b.msgs[0].date_utc || '').localeCompare(a.msgs[0].date_utc || ''));
+      return list;
+    },
+    unreadInGroup(g) { return g.msgs.filter(m => !m.is_read).length; },
+    toggleThread(k) { this.openThreads[k] = !this.openThreads[k]; },
+    openMail(m) {
+      if (!m.is_read) { m.is_read = 1; POSTJ('/api/inbox/' + m.id + '/flags', { read: true }).then(() => this.loadNotifications()).catch(() => {}); }
+      this.openModal('mail', JSON.parse(JSON.stringify(m)));
+    },
+    async setReadFlag(m, read) {
+      try { await POSTJ('/api/inbox/' + m.id + '/flags', { read }); } catch (e) {}
+      this.loadNotifications();
+    },
+    async toggleStar(m) {
+      m.starred = m.starred ? 0 : 1;
+      try { await POSTJ('/api/inbox/' + m.id + '/flags', { starred: !!m.starred }); } catch (e) {}
+    },
+    async markAllRead() {
+      const n = await POSTJ('/api/inbox/read-all', {});
+      this.toast('Marked ' + (n.marked || 0) + ' as read');
+      await this.loadInbox();
+      this.loadNotifications();
+    },
+    async trashMail(id) {
+      await POSTJ('/api/inbox/' + id + '/trash', {});
+      this.inboxMsgs = this.inboxMsgs.filter(m => m.id !== id);
+      this.modal = null;
+      this.toast('Moved to Gmail trash');
+    },
+    openReplyTo(m) {
+      this.modal = { type: 'compose', data: {
+        to: m.from_email || '',
+        subject: /^re:/i.test(m.subject || '') ? m.subject : 'Re: ' + (m.subject || ''),
+        body: '\n\n---\nOn ' + (m.date_utc || '') + ', ' + (m.from_name || m.from_email || '') + ' wrote:\n' + (m.snippet || ''),
+      } };
+    },
+    openCompose() { this.modal = { type: 'compose', data: { to: '', subject: '', body: '' } }; },
+    async loadNotifications() {
+      try {
+        const d = await GET('/api/notifications');
+        this.notifications = d.items || [];
+        this.unreadInbox = d.unread_inbox || 0;
+      } catch (e) {}
+    },
+    browserNotify(title, body) {
+      if (!('Notification' in window) || document.visibilityState !== 'hidden') return;
+      if (Notification.permission === 'granted') { try { new Notification(title, { body }); } catch (e) {} }
+    },
+    askNotifyPermission() {
+      if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {});
+    },
+    async loadDrafts() {
+      try { this.drafts = (await GET('/api/outreach-drafts?status=' + (this.draftFilter || ''))).drafts || []; } catch (e) {}
+    },
+    shownDrafts() { return this.drafts; },
+    async runDiscovery() {
+      if (this._busyDiscovery) return;
+      this._busyDiscovery = true;
+      try {
+        const r = await POSTJ('/api/outreach-drafts/run-discovery', { limit: 10 });
+        this.toast(r.message || ('Created ' + r.created + ' drafts'));
+        await this.loadDrafts();
+      } catch (e) { this.toast(e.message, true); }
+      this._busyDiscovery = false;
+    },
+    async approveDraft(d) {
+      try {
+        await POSTJ('/api/outreach-drafts/' + d.id + '/approve', {});
+        this.toast('Sent to ' + d.to_email);
+        await this.loadDrafts();
+      } catch (e) { this.toast(e.message, true); }
+    },
+    async discardDraft(d) {
+      try { await POSTJ('/api/outreach-drafts/' + d.id + '/discard', {}); } catch (e) {}
+      this.toast('Draft discarded');
+      await this.loadDrafts();
     },
     openLeadById(id) {
       const l = this.leads.find(x => x.id === id);
@@ -302,6 +423,7 @@ const App = {
         await this.loadInbox();
         if (!this._inboxSynced && !this.inboxMsgs.length) { this._inboxSilent = true; await this.syncInbox(); this._inboxSilent = false; }
       }
+      else if (r === '/outbox') await this.loadDrafts();
       else if (r === '/analytics') { this.analytics = await GET('/api/analytics'); await this.loadCampaigns(true); }
     },
     async loadLeads(silent) {
@@ -438,6 +560,7 @@ const App = {
       <a href="#/" class="nav-item" :class="{on:route==='/'}"><i v-ic="'layout-dashboard'"></i> Dashboard</a>
       <a href="#/leads" class="nav-item" :class="{on:route==='/leads'}"><i v-ic="'inbox'"></i> Leads <span class="n-count" v-if="navCounts['/leads']">{{navCounts['/leads']}}</span></a>
       <a href="#/campaigns" class="nav-item" :class="{on:route==='/campaigns'}"><i v-ic="'send'"></i> Campaigns</a>
+      <a href="#/outbox" class="nav-item" :class="{on:route==='/outbox'}"><i v-ic="'mail-open'"></i> Outbox</a>
       <a href="#/pipeline" class="nav-item" :class="{on:route==='/pipeline'}"><i v-ic="'square-kanban'"></i> Pipeline</a>
       <a href="#/replies" class="nav-item" :class="{on:route==='/replies'}"><i v-ic="'message-square'"></i> Replies <span class="n-count" v-if="navCounts['/replies']">{{navCounts['/replies']}}</span></a>
       <a href="#/inbox" class="nav-item" :class="{on:route==='/inbox'}"><i v-ic="'mail'"></i> Inbox <span class="n-count" v-if="inboxMsgs.length">{{inboxMsgs.length}}</span></a>
@@ -466,10 +589,29 @@ const App = {
       </div>
       <div class="top-spacer"></div>
       <div class="top-actions">
+        <button class="icon-btn" style="position:relative" title="Notifications" @click.stop="notifOpen=!notifOpen;askNotifyPermission()">
+          <i v-ic="'bell'"></i>
+          <span class="bell-dot" v-if="unreadInbox>0">{{unreadInbox>99?'99+':unreadInbox}}</span>
+        </button>
         <button class="btn btn-g btn-sm" @click="openModal('import')"><i v-ic="'download'"></i> Import</button>
-        <button class="btn btn-p btn-sm" @click="openModal('newcamp')"><i v-ic="'plus'"></i> Campaign</button>
+        <button class="btn btn-p btn-sm" @click="openCompose()"><i v-ic="'plus'"></i> Compose</button>
+      </div>
+      <div class="notif-panel" v-if="notifOpen" @click.stop>
+        <div class="panel-h" style="padding:10px 14px"><span class="panel-t">Notifications</span><button class="chip" style="padding:2px 8px;font-size:.6rem" @click="markAllRead()">Mark all read</button></div>
+        <div style="max-height:340px;overflow-y:auto">
+          <div v-for="(n,i) in notifications.slice(0,10)" :key="i" class="nudge" style="padding:9px 14px">
+            <span class="stage-dot" :style="{background:n.type==='interested'?'var(--acc)':'var(--blue)'}"></span>
+            <div style="flex:1;min-width:0;cursor:pointer" @click="openNotif(n)">
+              <div style="font-size:.8rem;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{n.title}}</div>
+              <div class="dim" style="font-size:.72rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{n.detail}}</div>
+            </div>
+            <span class="act-time">{{ago(n.at)}}</span>
+          </div>
+          <div v-if="!notifications.length" class="empty" style="padding:18px"><div class="empty-d">Nothing new.</div></div>
+        </div>
       </div>
     </header>
+    <div class="notif-mask" v-if="notifOpen" @click="notifOpen=false"></div>
 
     <main class="page">
 
@@ -720,30 +862,110 @@ const App = {
 
       <template v-else-if="route==='/inbox'">
         <div class="page-head">
-          <div><div class="page-title">Inbox</div><div class="page-desc">{{inboxMsgs.length}} emails mirrored from your Gmail · newest first</div></div>
-          <button class="btn btn-g btn-sm" @click="syncInbox()" :disabled="inboxLoading"><i v-ic="'refresh-cw'"></i> {{inboxLoading?'Syncing…':'Sync now'}}</button>
+          <div><div class="page-title">Inbox</div><div class="page-desc">{{inboxMsgs.length}} emails mirrored · tap any to read the full message</div></div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-o btn-sm" @click="groupThreads=!groupThreads"><i v-ic="'filter'"></i> {{groupThreads?'Threads':'Flat'}}</button>
+            <button class="btn btn-g btn-sm" @click="syncInbox()" :disabled="inboxLoading"><i v-ic="'refresh-cw'"></i> {{inboxLoading?'Syncing…':'Sync'}}</button>
+          </div>
+        </div>
+        <div class="chips" style="margin-bottom:12px">
+          <button class="chip" :class="{on:inboxFilter==='all'}" @click="inboxFilter='all'">All<span class="c-n">{{inboxMsgs.length}}</span></button>
+          <button class="chip" :class="{on:inboxFilter==='unread'}" @click="inboxFilter='unread'">Unread<span class="c-n">{{inboxMsgs.filter(m=>!m.is_read).length}}</span></button>
+          <button class="chip" :class="{on:inboxFilter==='leads'}" @click="inboxFilter='leads'">From leads<span class="c-n">{{inboxMsgs.filter(m=>m.lead_id).length}}</span></button>
+          <button class="chip" :class="{on:inboxFilter==='starred'}" @click="inboxFilter='starred'">Starred<span class="c-n">{{inboxMsgs.filter(m=>m.starred).length}}</span></button>
         </div>
         <div class="search" style="max-width:none;margin-bottom:12px">
           <i v-ic="'search'"></i>
           <input v-model="inboxQ" placeholder="Filter by sender, subject, content…">
         </div>
         <div class="panel">
-          <div v-for="m in filteredInbox()" :key="m.message_id" class="mail-row" @click="m.lead_id&&openLeadById(m.lead_id)" :class="{linked:m.lead_id}">
-            <div class="mail-top">
-              <span class="mail-from">{{m.from_name||m.from_email}}</span>
-              <span class="bg bg-new" v-if="m.lead_id" title="Matched to a lead">lead</span>
-              <span class="mail-date mono dim">{{ago(m.date_utc)}}</span>
+          <template v-if="groupThreads && threadGroups()">
+            <div v-for="g in threadGroups()" :key="g.key" class="thread">
+              <div class="mail-row thread-head" @click="toggleThread(g.key)">
+                <span class="avatar sm" :style="{background:'hsl('+avatarHue(g.from)+',42%,36%)'}">{{initials(g.from)}}</span>
+                <div style="flex:1;min-width:0">
+                  <div class="mail-top" style="gap:8px">
+                    <span class="mail-from">{{g.from}}</span>
+                    <span class="bg bg-new" v-if="g.lead_id">lead</span>
+                    <span class="bg bg-interested" v-if="unreadInGroup(g)">{{unreadInGroup(g)}} new</span>
+                  </div>
+                  <div class="mail-subject">{{g.subject}}</div>
+                </div>
+                <div style="text-align:right;flex-shrink:0">
+                  <div class="mail-date mono dim">{{ago(g.msgs[0].date_utc)}}</div>
+                  <div class="dim mono" style="font-size:.62rem">{{g.msgs.length}} msg{{g.msgs.length>1?'s':''}}</div>
+                </div>
+              </div>
+              <div v-if="openThreads[g.key]">
+                <div v-for="m in g.msgs" :key="m.message_id" class="mail-row sub" @click.stop="openMail(m)">
+                  <div class="mail-top">
+                    <span class="mono dim" style="font-size:.7rem;flex-shrink:0">{{fmtDate(m.date_utc)}}</span>
+                    <span class="bg bg-new" v-if="m.lead_id">lead</span>
+                    <span class="mail-subject dim" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{m.snippet||m.subject}}</span>
+                    <button class="icon-btn kcopy" @click.stop="toggleStar(m)"><i v-ic="'star'" :style="{color:m.starred?'var(--amber)':'currentColor'}"></i></button>
+                  </div>
+                </div>
+              </div>
             </div>
-            <div class="mail-subject">{{m.subject}}</div>
-            <div class="mail-snip dim" v-if="m.snippet">{{m.snippet}}</div>
-          </div>
+          </template>
+          <template v-else>
+            <div v-for="m in filteredInbox()" :key="m.message_id" class="mail-row" :class="{unread:!m.is_read}" @click="openMail(m)">
+              <div class="mail-top">
+                <span class="unread-dot" v-if="!m.is_read"></span>
+                <span class="mail-from">{{m.from_name||m.from_email}}</span>
+                <span class="bg bg-new" v-if="m.lead_id">lead</span>
+                <span class="mail-subject" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{m.subject}}</span>
+                <button class="icon-btn kcopy" @click.stop="toggleStar(m)"><i v-ic="'star'" :style="{color:m.starred?'var(--amber)':'currentColor'}"></i></button>
+                <span class="mail-date mono dim">{{ago(m.date_utc)}}</span>
+              </div>
+              <div class="mail-snip dim" v-if="m.snippet">{{m.snippet}}</div>
+            </div>
+          </template>
           <div v-if="inboxLoading&&!inboxMsgs.length" style="padding:18px">
             <div class="skel" style="height:56px;margin-bottom:8px"></div><div class="skel" style="height:56px;margin-bottom:8px"></div><div class="skel" style="height:56px"></div>
           </div>
           <div v-if="!inboxLoading&&!filteredInbox().length" class="empty">
             <div class="empty-ic"><i v-ic="'mail'"></i></div>
-            <div class="empty-t">No mail mirrored yet</div>
-            <div class="empty-d">Hit Sync now — the latest 60 messages from your INBOX are pulled in and matched to leads.</div>
+            <div class="empty-t">Nothing here</div>
+            <div class="empty-d">Sync pulls your latest Gmail messages and matches senders to leads.</div>
+          </div>
+        </div>
+      </template>
+
+      <template v-else-if="route==='/outbox'">
+        <div class="page-head">
+          <div><div class="page-title">Outbox</div><div class="page-desc">Discovery drafts land in your Gmail first — approve here to send. No repeat contact within {{cooldownDays}} days.</div></div>
+          <button class="btn btn-p btn-sm" @click="runDiscovery()" :disabled="_busyDiscovery"><i v-ic="'sparkles'"></i> {{_busyDiscovery?'Drafting…':'Run discovery → draft 10'}}</button>
+        </div>
+        <div class="chips" style="margin-bottom:12px">
+          <button class="chip" :class="{on:draftFilter==='pending'}" @click="draftFilter='pending';loadDrafts()">Pending</button>
+          <button class="chip" :class="{on:draftFilter==='sent'}" @click="draftFilter='sent';loadDrafts()">Sent</button>
+          <button class="chip" :class="{on:draftFilter==='discarded'}" @click="draftFilter='discarded';loadDrafts()">Discarded</button>
+          <button class="chip" :class="{on:draftFilter===''}" @click="draftFilter='';loadDrafts()">All</button>
+        </div>
+        <div class="panel">
+          <table class="tbl" v-if="shownDrafts().length">
+            <thead><tr><th>To</th><th>Subject</th><th>Channel</th><th>Status</th><th>When</th><th style="width:150px"></th></tr></thead>
+            <tbody>
+              <tr v-for="d in shownDrafts()" :key="d.id">
+                <td><div class="cell-name">{{d.lead_name||d.to_email}}</div><div class="cell-sub">{{d.to_email}}</div></td>
+                <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{d.subject}}</td>
+                <td class="mono dim">{{d.channel}}</td>
+                <td><span class="bg" :class="'bg-'+(d.status==='pending'?'alerted':d.status)">{{d.status}}</span></td>
+                <td class="mono dim">{{ago(d.created_at)}}</td>
+                <td>
+                  <template v-if="d.status==='pending'">
+                    <button class="btn btn-p btn-xs" @click="approveDraft(d)">Approve & send</button>
+                    <button class="btn btn-d btn-xs" @click="discardDraft(d)">Discard</button>
+                  </template>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else class="empty">
+            <div class="empty-ic"><i v-ic="'mail-open'"></i></div>
+            <div class="empty-t">No {{draftFilter||''}} outreach drafts</div>
+            <div class="empty-d">Run discovery to pick qualified leads and write their emails into your Gmail Drafts. Nothing sends until you approve.</div>
           </div>
         </div>
       </template>
@@ -851,6 +1073,8 @@ const App = {
   </div>
 
   <lead-modal v-if="modal&&modal.type==='lead'" :lead="modal.data" @close="close()" @toast="(m,e)=>toast(m,e)" />
+  <mail-modal v-if="modal&&modal.type==='mail'" :mail="modal.data" @close="close()" @toast="(m,e)=>toast(m,e)" @reply="openReplyTo" @trashed="trashMail" @openlead="openLeadById" />
+  <compose-modal v-if="modal&&modal.type==='compose'" :draft="modal.data" @close="close()" @toast="(m,e)=>toast(m,e)" />
   <camp-modal v-if="modal&&modal.type==='campdetail'" :camp="modal.data" @close="close()" @toast="(m,e)=>toast(m,e)" />
   <import-modal v-if="modal&&modal.type==='import'" @close="close()" @done="afterImportDone" @toast="(m,e)=>toast(m,e)" />
   <new-camp-modal v-if="modal&&modal.type==='newcamp'" @close="close()" @done="loadCampaigns(true)" @toast="(m,e)=>toast(m,e)" />
@@ -1193,4 +1417,87 @@ app.component('new-camp-modal', {
     },
   },
 });
+app.component('mail-modal', {
+  props: ['mail'],
+  emits: ['close', 'toast', 'reply', 'trashed', 'openlead'],
+  data() { return { body: this.mail.body || this.mail.snippet || '', loading: !this.mail.body, starred: !!this.mail.starred }; },
+  mounted() { this.loadBody(); },
+  methods: {
+    ago: timeago,
+    async loadBody() {
+      try {
+        const d = await GET('/api/inbox/' + this.mail.id);
+        this.body = (d.message && d.message.body) || this.mail.snippet || '(no readable content)';
+        if (!this.mail.date_utc) this.mail.date_utc = d.message.date_utc;
+      } catch (e) { this.$emit('toast', e.message, true); }
+      this.loading = false;
+    },
+    async toggleStar() {
+      this.starred = !this.starred;
+      try { await POSTJ('/api/inbox/' + this.mail.id + '/flags', { starred: this.starred }); } catch (e) {}
+    },
+    async markUnread() {
+      try { await POSTJ('/api/inbox/' + this.mail.id + '/flags', { read: false }); } catch (e) {}
+      this.$emit('toast', 'Marked unread');
+      this.$emit('close');
+    },
+  },
+  template: `
+  <modal-shell wide @close="$emit('close')">
+    <template #t>
+      <span style="display:flex;align-items:center;gap:8px;min-width:0">
+        {{mail.subject}}
+        <button class="icon-btn" @click="toggleStar" title="Star"><i v-ic="'star'" :style="{color:starred?'var(--amber)':'currentColor'}"></i></button>
+      </span>
+    </template>
+    <div style="padding-top:14px">
+      <div class="meta-grid">
+        <div><div class="meta-l">From</div><div class="meta-v">{{mail.from_name||'—'}} <span class="mono dim" style="font-size:.72rem">{{mail.from_email}}</span></div></div>
+        <div><div class="meta-l">Date</div><div class="meta-v">{{ago(mail.date_utc)}} ago</div></div>
+        <div v-if="mail.lead_id"><div class="meta-l">Matched lead</div><div class="meta-v"><a style="color:var(--acc);cursor:pointer" @click="$emit('openlead',mail.lead_id)">Open lead →</a></div></div>
+      </div>
+      <div class="mail-body-wrap">
+        <p class="mono dim skel-line" v-if="loading" style="font-size:.75rem">Fetching full message from Gmail…</p>
+        <pre v-else class="mail-body">{{body}}</pre>
+      </div>
+    </div>
+    <template #f>
+      <button class="btn btn-o btn-sm" @click="markUnread"><i v-ic="'mail-open'"></i> Mark unread</button>
+      <button class="btn btn-d btn-sm" @click="$emit('trashed',mail.id); $emit('close')"><i v-ic="'trash-2'"></i> Trash</button>
+      <button class="btn btn-p btn-sm" style="margin-left:auto" @click="$emit('reply',mail)"><i v-ic="'reply'"></i> Reply via Gmail draft</button>
+    </template>
+  </modal-shell>`,
+});
+
+app.component('compose-modal', {
+  props: ['draft'],
+  emits: ['close', 'toast'],
+  data() { return { to: this.draft.to, subject: this.draft.subject, body: this.draft.body, busy: false }; },
+  template: `
+  <modal-shell wide @close="$emit('close')">
+    <template #t><i v-ic="'send'"></i> Compose — saves to your Gmail Drafts</template>
+    <label class="fl">To</label>
+    <input type="email" v-model="to" required placeholder="recipient@company.com">
+    <label class="fl">Subject</label>
+    <input type="text" v-model="subject" required placeholder="Subject line">
+    <label class="fl">Body</label>
+    <textarea v-model="body" rows="9" placeholder="Write your email…"></textarea>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+      <button type="button" class="btn btn-o" @click="$emit('close')">Cancel</button>
+      <button class="btn btn-p" :disabled="busy||!to||!subject" @click="save">{{busy?'Saving…':'Save to Gmail Drafts'}}</button>
+    </div>
+  </modal-shell>`,
+  methods: {
+    async save() {
+      this.busy = true;
+      try {
+        const r = await POSTJ('/api/drafts/compose', { to: this.to, subject: this.subject, body: this.body });
+        this.$emit('toast', r.message || 'Draft saved in Gmail');
+        this.$emit('close');
+      } catch (e) { this.$emit('toast', e.message, true); }
+      this.busy = false;
+    },
+  },
+});
+
 app.mount('#app');
