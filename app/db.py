@@ -115,7 +115,13 @@ class Database:
                     fetched_at TEXT NOT NULL
                 );
 
-                CREATE TABLE IF NOT EXISTS contact_history (
+                CREATE TABLE IF NOT EXISTS smtp_checks (
+                    email TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    checked_at TEXT NOT NULL
+                );
+
+CREATE TABLE IF NOT EXISTS contact_history (
                     email TEXT PRIMARY KEY,
                     last_channel TEXT,
                     last_at TEXT NOT NULL
@@ -1154,3 +1160,49 @@ class Database:
                 "SELECT 1 FROM outreach_drafts WHERE lower(to_email)=lower(?) AND status='pending' LIMIT 1",
                 (email,))
             return await cur.fetchone() is not None
+
+    async def execute_raw(self, sql: str, params: tuple = ()) -> None:
+        async with self.connect() as db:
+            await db.execute(sql, params)
+            await db.commit()
+
+    async def count_leads(self) -> int:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute('SELECT COUNT(*) AS n FROM leads')
+            return int((await cur.fetchone())['n'])
+
+    async def set_smtp_result(self, email: str, status: str) -> None:
+        async with self.connect() as db:
+            await db.execute(
+                '''INSERT INTO smtp_checks(email, status, checked_at) VALUES (?, ?, ?)
+                   ON CONFLICT(email) DO UPDATE SET status=excluded.status, checked_at=excluded.checked_at''',
+                (email.lower(), status, utc_now()))
+            await db.commit()
+
+    async def get_smtp_result(self, email: str) -> dict | None:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute('SELECT * FROM smtp_checks WHERE lower(email)=lower(?)', (email,))
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+    async def smtp_stats(self) -> dict:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute('SELECT status, COUNT(*) AS n FROM smtp_checks GROUP BY status')
+            stats = {r['status']: r['n'] for r in await cur.fetchall()}
+        cur_total = await self.count_leads()
+        emails = 0
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT COUNT(*) AS n FROM leads WHERE email IS NOT NULL AND email != ''")
+            emails = int((await cur.fetchone())['n'])
+        return {'checked': sum(stats.values()), 'emails_with_address': emails,
+                'leads_total': cur_total, **stats}
+
+    async def all_smtp_checks(self) -> list[dict]:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute('SELECT email FROM smtp_checks')
+            return [dict(r) for r in await cur.fetchall()]

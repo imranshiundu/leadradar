@@ -106,3 +106,28 @@ async def reset_password(db: Database, email: str, otp: str, new_password: str) 
         return False
     await db.update_password(int(user['id']), hash_password(new_password))
     return True
+
+
+def append_draft_with_bcc(to_addr: str, subject: str, body: str, bcc: list[str]) -> None:
+    """Append a message with a BCC list to the Gmail Drafts folder (blocking)."""
+    s = get_settings()
+    if not (s.smtp_username and s.smtp_app_password):
+        raise RuntimeError('IMAP credentials are not configured')
+
+    msg = EmailMessage()
+    msg['From'] = s.smtp_username
+    msg['To'] = to_addr
+    msg['Bcc'] = ', '.join(bcc)
+    msg['Subject'] = subject
+    msg['Date'] = formatdate(localtime=False)
+    msg.set_content(body)
+
+    mail = imaplib.IMAP4_SSL(s.imap_host, s.imap_port)
+    try:
+        mail.login(s.smtp_username, s.smtp_app_password)
+        mail.append('"[Gmail]/Drafts"', '(\\Draft)', imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+    finally:
+        try:
+            mail.logout()
+        except Exception:  # noqa: BLE001
+            pass

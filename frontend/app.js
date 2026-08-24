@@ -96,6 +96,10 @@ const App = {
       drafts: [],
       draftFilter: 'pending',
       cooldownDays: 30,
+      discovery: {},
+      smtpStats: {},
+      bccResult: null,
+      _discoTimer: null,
       _inboxSynced: false,
     };
   },
@@ -387,6 +391,59 @@ const App = {
       this.toast('Draft discarded');
       await this.loadDrafts();
     },
+    async refreshOutboxStats() {
+      try {
+        const s = await GET('/api/verify-smtp-stats');
+        this.smtpStats = s;
+      } catch (e) {}
+    },
+    async findHosts() {
+      if (this._discoTimer) return;
+      try {
+        this.discovery = await POSTJ('/api/discovery/find-hosts', { target: 300 });
+        this.toast('Host discovery started — mining Gmail, then the web');
+        this._discoTimer = setInterval(async () => {
+          try {
+            this.discovery = await GET('/api/discovery/status');
+            if (this.discovery.done || !this.discovery.running) {
+              clearInterval(this._discoTimer);
+              this._discoTimer = null;
+              const t = this.discovery.leads_total;
+              if (t) this.toast('Discovery done — ' + t + ' leads total');
+              this.refreshOutboxStats();
+            }
+          } catch (e) {}
+        }, 5000);
+      } catch (e) { this.toast(e.message, true); }
+    },
+    async deepVerify() {
+      if (this._verifyingAll) return;
+      this._verifyingAll = true;
+      let rounds = 0;
+      while (rounds < 40) {
+        try {
+          const r = await POSTJ('/api/verify-smtp-batch', { batch_size: 25 });
+          this.smtpStats = r;
+          if (!r.probed_this_run) break;
+          rounds++;
+          this.toast('Verified ' + r.checked + '/' + r.emails_with_address + ' — ' + (r.n_valid || 0) + ' valid so far');
+        } catch (e) { this.toast(e.message, true); break; }
+      }
+      this._verifyingAll = false;
+      this.refreshOutboxStats();
+      this.toast('Deep verification complete');
+    },
+    async buildBcc() {
+      if (this._bccBusy) return;
+      this._bccBusy = true;
+      this.bccResult = null;
+      try {
+        const r = await POSTJ('/api/outreach/bcc-draft', { to: 'taptapafrica@gmail.com', require_smtp_valid: true, max_hosts: 450 });
+        this.bccResult = r;
+        this.toast(r.message);
+      } catch (e) { this.toast(e.message, true); }
+      this._bccBusy = false;
+    },
     openLeadById(id) {
       const l = this.leads.find(x => x.id === id);
       if (l) this.openLead(l); else this.go('/leads');
@@ -423,7 +480,7 @@ const App = {
         await this.loadInbox();
         if (!this._inboxSynced && !this.inboxMsgs.length) { this._inboxSilent = true; await this.syncInbox(); this._inboxSilent = false; }
       }
-      else if (r === '/outbox') await this.loadDrafts();
+      else if (r === '/outbox') { await this.loadDrafts(); this.refreshOutboxStats(); }
       else if (r === '/analytics') { this.analytics = await GET('/api/analytics'); await this.loadCampaigns(true); }
     },
     async loadLeads(silent) {
@@ -934,9 +991,35 @@ const App = {
 
       <template v-else-if="route==='/outbox'">
         <div class="page-head">
-          <div><div class="page-title">Outbox</div><div class="page-desc">Discovery drafts land in your Gmail first — approve here to send. No repeat contact within {{cooldownDays}} days.</div></div>
-          <button class="btn btn-p btn-sm" @click="runDiscovery()" :disabled="_busyDiscovery"><i v-ic="'sparkles'"></i> {{_busyDiscovery?'Drafting…':'Run discovery → draft 10'}}</button>
+          <div><div class="page-title">Outbox</div><div class="page-desc">Find hosts, verify their inboxes really work, blast one email with everyone on BCC — all as Gmail drafts you approve.</div></div>
         </div>
+
+        <div class="kpis">
+          <div class="kpi" style="--k:var(--blue)"><div class="kpi-v">{{smtpStats.leads_total||0}}</div><div class="kpi-l">Hosts total</div><div class="kpi-sub">target 300</div></div>
+          <div class="kpi" style="--k:var(--acc)"><div class="kpi-v">{{smtpStats.emails_with_address||0}}</div><div class="kpi-l">With email</div></div>
+          <div class="kpi" style="--k:var(--green)"><div class="kpi-v">{{smtpStats.valid||0}}</div><div class="kpi-l">SMTP verified</div></div>
+          <div class="kpi" style="--k:var(--red)"><div class="kpi-v">{{(smtpStats.invalid||0)+(smtpStats.unreachable||0)}}</div><div class="kpi-l">Dead / unreachable</div></div>
+          <div class="kpi" style="--k:var(--amber)"><div class="kpi-v">{{drafts.filter(d=>d.status==='pending').length||0}}</div><div class="kpi-l">Drafts pending</div></div>
+        </div>
+
+        <div class="panel" style="margin-bottom:14px">
+          <div class="panel-h"><span class="panel-t">Host pipeline</span>
+            <span class="panel-s" v-if="discovery.running">⏳ {{discovery.phase}} · found {{discovery.found||0}}</span>
+            <span class="panel-s" v-else-if="discovery.done">done · {{discovery.leads_total}} leads</span>
+          </div>
+          <div style="padding:16px 18px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <button class="btn btn-g btn-sm" @click="findHosts()" :disabled="discovery.running"><i v-ic="'radar'"></i> {{discovery.running?'Discovering…':'Find more hosts → 300'}}</button>
+            <button class="btn btn-o btn-sm" @click="deepVerify()" :disabled="_verifyingAll"><i v-ic="'shield-check'"></i> {{_verifyingAll?'Probing mailboxes…':'Deep-verify (SMTP probe)'}}</button>
+            <button class="btn btn-p btn-sm" @click="buildBcc()" :disabled="_bccBusy"><i v-ic="'send'"></i> {{_bccBusy?'Drafting…':'Build BCC draft → taptapafrica@gmail.com'}}</button>
+            <span v-if="(discovery.running||discovery.phase)&&!discovery.done" class="mono dim" style="font-size:.7rem">{{discovery.phase}} — {{discovery.scanned||0}} scanned, {{discovery.found||0}} new hosts</span>
+          </div>
+          <div v-if="bccResult" style="margin:0 18px 16px;padding:12px 14px;border:1px solid var(--acc-line);background:var(--acc-soft);border-radius:var(--r-sm);font-size:.82rem">
+            <strong>{{bccResult.message}}</strong>
+            <div class="dim mono" style="font-size:.68rem;margin-top:4px">To {{bccResult.to}} · eligible {{bccResult.eligible}} · chunks: <span v-for="c in bccResult.chunks" :key="c.chunk">[{{c.bcc_count}} BCC]</span></div>
+            <div class="hint" style="color:var(--text2)">Open Gmail → Drafts → review → hit send when happy. Gmail caps ~500 recipients per message; chunks stay under it.</div>
+          </div>
+        </div>
+
         <div class="chips" style="margin-bottom:12px">
           <button class="chip" :class="{on:draftFilter==='pending'}" @click="draftFilter='pending';loadDrafts()">Pending</button>
           <button class="chip" :class="{on:draftFilter==='sent'}" @click="draftFilter='sent';loadDrafts()">Sent</button>
@@ -954,9 +1037,12 @@ const App = {
                 <td><span class="bg" :class="'bg-'+(d.status==='pending'?'alerted':d.status)">{{d.status}}</span></td>
                 <td class="mono dim">{{ago(d.created_at)}}</td>
                 <td>
-                  <template v-if="d.status==='pending'">
+                  <template v-if="d.status==='pending' && d.channel!=='bcc_blast'">
                     <button class="btn btn-p btn-xs" @click="approveDraft(d)">Approve & send</button>
                     <button class="btn btn-d btn-xs" @click="discardDraft(d)">Discard</button>
+                  </template>
+                  <template v-else-if="d.channel==='bcc_blast'">
+                    <span class="dim" style="font-size:.7rem">review in Gmail</span>
                   </template>
                 </td>
               </tr>
@@ -965,7 +1051,7 @@ const App = {
           <div v-else class="empty">
             <div class="empty-ic"><i v-ic="'mail-open'"></i></div>
             <div class="empty-t">No {{draftFilter||''}} outreach drafts</div>
-            <div class="empty-d">Run discovery to pick qualified leads and write their emails into your Gmail Drafts. Nothing sends until you approve.</div>
+            <div class="empty-d">Run discovery to find 300 hosts, deep-verify which inboxes actually exist, then build your BCC blast.</div>
           </div>
         </div>
       </template>

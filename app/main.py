@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -13,6 +14,8 @@ from fastapi.templating import Jinja2Templates
 from app import campaigns as campaign_engine
 from app import inbox as inbox_module
 from app import auth
+from app import deepverify
+from app import host_finder
 from app import inbox_sync
 from app.config import get_settings
 from app.db import Database
@@ -367,6 +370,143 @@ async def api_discard_draft(draft_id: int):
         raise HTTPException(404, 'Draft not found')
     await db.set_outreach_draft_status(draft_id, 'discarded')
     return {'ok': True}
+
+
+# ---------------------------------------------------------------------------
+# Host discovery at scale + SMTP deep verification + BCC blast
+# ---------------------------------------------------------------------------
+
+_BCC_RECIPIENT_CAP = 450  # stay under Gmail's 500 To+Cc+Bcc limit per message
+
+
+@app.post('/api/discovery/find-hosts')
+async def api_find_hosts(request: Request):
+    body = await request.json() if await request.body() else {}
+    target = min(int(body.get('target') or 300), 2000)
+    if host_finder.status()['running']:
+        return {'ok': True, **host_finder.status()}
+    asyncio.create_task(host_finder.run(db, target))
+    await db.add_event('discovery:find_hosts', {'target': target})
+    return {'ok': True, **host_finder.status()}
+
+
+@app.get('/api/discovery/status')
+async def api_discovery_status():
+    return {'ok': True, **host_finder.status()}
+
+
+def _chunk_bcc(emails: list[str], cap: int = _BCC_RECIPIENT_CAP) -> list[list[str]]:
+    return [emails[i:i + cap] for i in range(0, len(emails), cap)]
+
+
+@app.post('/api/outreach/bcc-draft')
+async def api_bcc_draft(request: Request):
+    """One email to taptapafrica@gmail.com with verified hosts on BCC, saved as Gmail draft(s)."""
+    body = await request.json() if await request.body() else {}
+    to_addr = (body.get('to') or 'taptapafrica@gmail.com').strip()
+    subject = (body.get('subject') or '').strip()
+    text = body.get('body') or ''
+    require_smtp_valid = bool(body.get('require_smtp_valid', True))
+    max_hosts = min(int(body.get('max_hosts') or 450), _BCC_RECIPIENT_CAP)
+
+    rows = [dict(r) for r in await db.list_leads(limit=10000)]
+    chosen: list[str] = []
+    for lead in rows:
+        e = (lead.get('email') or '').strip()
+        if not e:
+            continue
+        if lead.get('status') == 'opted_out' or await db.is_opted_out(e):
+            continue
+        if await db.has_pending_draft_for(e) or await db.was_recently_contacted(e, settings.contact_cooldown_days):
+            continue
+        smtp_res = await db.get_smtp_result(e)
+        if require_smtp_valid:
+            if not smtp_res:
+                continue
+            if smtp_res['status'] != 'valid':
+                continue
+        elif smtp_res and smtp_res['status'] == 'invalid':
+            continue
+        chosen.append(e)
+        if len(chosen) >= max_hosts * 8:  # hard scan stop; chunks below trim
+            break
+
+    if not chosen:
+        raise HTTPException(400, 'No eligible hosts. Run discovery and SMTP deep-verify first.')
+
+    # Default copy from the Taptap campaign when caller did not supply one.
+    if not subject or not text:
+        camps = await db.list_campaigns()
+        subj_tpl = (dict(camps[0])['subject_template'] if camps else 'Taptap — event ticketing & payments')
+        body_tpl = (dict(camps[0])['body_template'] if camps else '')
+        subject = re.sub(r'\{\{\s*\w+\s*\}\}', '', subj_tpl).strip()[:180] if not subject else subject
+        text = re.sub(r'\{\{\s*\w+\s*\}\}', 'there', body_tpl) if not text else text
+
+    chunks = _chunk_bcc(chosen)
+    results = []
+    for i, chunk in enumerate(chunks, 1):
+        subj = subject + (f' ({i}/{len(chunks)})' if len(chunks) > 1 else '')
+        try:
+            await asyncio.to_thread(auth.append_draft_with_bcc, to_addr, subj, text, chunk)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(502, f'Gmail draft failed for chunk {i}: {exc}')
+        await db.create_outreach_draft(None, to_addr, subj,
+                                       text + f'\n\n[BCC x{len(chunk)}]', channel='bcc_blast')
+        results.append({'chunk': i, 'bcc_count': len(chunk), 'subject': subj})
+        for e in chunk:
+            await db.touch_contact(e, 'draft')
+
+    await db.add_event('outreach:bcc_draft', {
+        'to': to_addr, 'chunks': len(results),
+        'total_bcc': sum(r['bcc_count'] for r in results)})
+    return {'ok': True, 'to': to_addr, 'eligible': len(chosen),
+            'chunks': results, 'message':
+            f'{len(results)} Gmail draft(s) created — {sum(r["bcc_count"] for r in results)} hosts BCC\'d.'}
+
+
+@app.post('/api/verify-smtp-batch')
+async def api_verify_smtp_batch(request: Request):
+    """SMTP-probe the next batch of unverified lead addresses."""
+    body = await request.json() if await request.body() else {}
+    batch = min(int(body.get('batch_size') or 20), 50)
+
+    rows = [dict(r) for r in await db.list_leads(limit=10000)]
+    todo = []
+    checked_set = set()
+    for r in await db.all_smtp_checks():
+        checked_set.add(r['email'])
+    for lead in rows:
+        e = (lead.get('email') or '').strip().lower()
+        if not e or e in checked_set:
+            continue
+        todo.append(e)
+        if len(todo) >= batch:
+            break
+
+    results = {k: 0 for k in ('valid', 'catch_all', 'invalid', 'risky', 'unreachable')}
+    sem = asyncio.Semaphore(8)
+
+    async def probe(e: str):
+        async with sem:
+            res = await asyncio.to_thread(deepverify.smtp_probe, e)
+            results[res['status']] = results.get(res['status'], 0) + 1
+            await db.set_smtp_result(e, res['status'])
+
+    if todo:
+        await asyncio.gather(*(probe(e) for e in todo))
+
+    remaining = len(todo) - len(todo)  # computed after gather via stats
+    stats = await db.smtp_stats()
+    stats['remaining'] = stats['emails_with_address'] - stats['checked']
+    stats['probed_this_run'] = len(todo)
+    return {'ok': True, **stats, **{f'n_{k}': v for k, v in results.items()}}
+
+
+@app.get('/api/verify-smtp-stats')
+async def api_verify_smtp_stats():
+    stats = await db.smtp_stats()
+    stats['remaining'] = stats['emails_with_address'] - stats['checked']
+    return {'ok': True, **stats}
 
 
 @app.get('/', response_class=HTMLResponse)
