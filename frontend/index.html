@@ -3,20 +3,48 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LeadRadarSafe Pro</title>
+    <title>LeadRadarSafe</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
 </head>
 <body>
-    <div id="app">
-        <header class="header">
-            <a href="#/" class="logo">LeadRadar<span class="accent">Safe</span></a>
-            <nav id="nav"></nav>
-        </header>
-        <main id="main" class="container"></main>
+    <div class="app">
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-brand">
+                <div class="brand-icon">LR</div>
+                <div class="brand-text">
+                    <span class="brand-name">LeadRadar</span>
+                    <span class="brand-tag">Safe Pro</span>
+                </div>
+            </div>
+            <nav class="sidebar-nav" id="nav"></nav>
+            <div class="sidebar-footer">
+                <div class="server-status" id="serverStatus">
+                    <span class="status-dot"></span>
+                    <span class="status-text">Connecting...</span>
+                </div>
+            </div>
+        </aside>
+        <div class="main-wrap">
+            <header class="topbar">
+                <button class="menu-toggle" onclick="document.getElementById('sidebar').classList.toggle('open')">☰</button>
+                <div class="topbar-search">
+                    <input type="text" placeholder="Search leads, campaigns..." id="globalSearch" onkeyup="handleSearch(event)">
+                </div>
+                <div class="topbar-actions">
+                    <a href="#/import" class="btn btn-accent btn-sm">+ Import</a>
+                    <a href="#/settings" class="btn btn-ghost btn-sm" title="Settings">⚙</a>
+                </div>
+            </header>
+            <main class="content" id="main">
+                <div class="loading">Loading...</div>
+            </main>
+        </div>
     </div>
+    <div class="toast-container" id="toasts"></div>
     <script src="app.js"></script>
 </body>
 </html>
