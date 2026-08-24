@@ -1,0 +1,56 @@
+Sudo: 7zqBG9I8j98T1
+username: root
+SSH deploy key fingerprint: SHA256:NJJbxz0rvyvvxoSE3rwtfLHqV9p/GbrLRbXXxpoAdss
+ 
+Display Name
+Taptap 
+Host System
+14266
+Region
+EU
+IP Address
+169.58.128.213 
+MAC-Address
+00:50:56:66:32:5d
+IPv6 Address
+2a02:c207:2348:7197:0000:0000:0000:0001/64
+OS
+Linux
+Creation Date
+Aug 4, 2026
+Termination Date
+-
+Plan
+Description: Cloud VPS 4 (2026) (no setup)
+Disk Space: 100 GB
+View more
+
+Contract Period
+1 Month
+Monthly Price Incl. Add-Ons
+€5.50
+info
+VNC 
+Enabled
+info
+144.91.82.66:63329 
+Default User
+root
+Auto Backup
+Add-On required
+
+Snapshots
+
+Auto Backup
+
+Images
+
+Private Network
+
+Additional IPs
+
+Licenses
+
+DNS Management
+
+

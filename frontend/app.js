@@ -1,5 +1,5 @@
 // LeadRadarSafe Pro — Frontend SPA
-const API = localStorage.getItem('api_url') || 'http://localhost:8080';
+const API = localStorage.getItem('api_url') || 'http://169.58.128.213/lr';
 const TOKEN = localStorage.getItem('dashboard_token') || '';
 
 function api(path, opts = {}) {
