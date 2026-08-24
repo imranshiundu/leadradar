@@ -5,12 +5,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app import campaigns as campaign_engine
 from app import inbox as inbox_module
+from app import auth
+from app import inbox_sync
 from app.config import get_settings
 from app.db import Database
 from app.importer import extract_event_intel, parse_contacts
@@ -54,6 +56,7 @@ async def require_token(request: Request) -> None:
 async def lifespan(app: FastAPI):
     global scheduler
     await db.init()
+    await auth.ensure_admin(db)
     scheduler = build_scheduler(db)
     scheduler.start()
     await db.add_event('app:start', {'message': 'LeadRadarSafe started'})
@@ -65,7 +68,28 @@ async def lifespan(app: FastAPI):
         await db.add_event('app:stop', {'message': 'LeadRadarSafe stopped'})
 
 
+class SessionGuardMiddleware:
+    """Session auth for /api/* routes (skips /api/auth/*). Dashboard token still accepted."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] == 'http' and settings.auth_enabled and scope['path'].startswith('/api/') \
+                and not scope['path'].startswith('/api/auth/'):
+            headers = {k.decode().lower(): v.decode() for k, v in scope.get('headers', [])}
+            token = headers.get('x-session-token', '')
+            session = await db.get_session(token)
+            dash_ok = settings.dashboard_token and headers.get('x-dashboard-token') == settings.dashboard_token
+            if not session and not dash_ok:
+                response = JSONResponse({'detail': 'Not authenticated'}, status_code=401)
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
 app = FastAPI(title='LeadRadarSafe', version='1.0.0', lifespan=lifespan)
+app.add_middleware(SessionGuardMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=['*'],
@@ -76,16 +100,94 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory="app/web/static"), name="static")
 
 
-@app.get('/health', response_model=AppHealth)
+@app.get('/health')
 async def health():
-    return AppHealth(
-        status='ok',
-        db=settings.database_path,
-        telegram_configured=telegram_configured(),
-        smtp_configured=email_configured(),
-        groq_configured=bool(settings.groq_api_key),
-        search_configured=bool(settings.brave_search_api_key),
-    )
+    return {
+        'status': 'ok',
+        'db': settings.database_path,
+        'telegram_configured': telegram_configured(),
+        'smtp_configured': email_configured(),
+        'groq_configured': bool(settings.groq_api_key),
+        'search_configured': bool(settings.brave_search_api_key),
+        'auth_required': bool(settings.auth_enabled),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+
+
+@app.post('/api/auth/login')
+async def api_auth_login(request: Request):
+    body = await request.json()
+    result = await auth.login(db, (body.get('email') or '').strip(), body.get('password') or '')
+    if not result:
+        raise HTTPException(401, 'Wrong email or password')
+    await db.add_event('auth:login', {'email': result['email']})
+    return {'ok': True, **result}
+
+
+@app.post('/api/auth/logout')
+async def api_auth_logout(request: Request):
+    token = request.headers.get('x-session-token', '')
+    if token:
+        await db.delete_session(token)
+    return {'ok': True}
+
+
+@app.get('/api/auth/me')
+async def api_auth_me(request: Request):
+    session = await db.get_session(request.headers.get('x-session-token', ''))
+    if not session:
+        raise HTTPException(401, 'Not authenticated')
+    return {'email': session['email'], 'expires': session['expires_at']}
+
+
+@app.post('/api/auth/forgot')
+async def api_auth_forgot(request: Request):
+    body = await request.json()
+    email_addr = (body.get('email') or '').strip()
+    try:
+        code = await auth.send_recovery_draft(db, email_addr)
+        await db.add_event('auth:otp_created', {'email': email_addr})
+        return {'ok': True, 'message': f'Recovery draft saved in {email_addr} — open Gmail drafts for the 6-digit code.', 'code_hint': code[:1] + '•••••'}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, str(exc))
+
+
+@app.post('/api/auth/reset')
+async def api_auth_reset(request: Request):
+    body = await request.json()
+    email_addr = (body.get('email') or '').strip()
+    new_password = body.get('new_password') or ''
+    if len(new_password) < 6:
+        raise HTTPException(400, 'New password must be at least 6 characters')
+    ok = await auth.reset_password(db, email_addr, (body.get('otp') or '').strip(), new_password)
+    if not ok:
+        raise HTTPException(400, 'Invalid or expired recovery code')
+    await db.add_event('auth:password_reset', {'email': email_addr})
+    return {'ok': True, 'message': 'Password updated — sign in with your new password.'}
+
+
+# ---------------------------------------------------------------------------
+# Inbox mirror
+# ---------------------------------------------------------------------------
+
+
+@app.post('/api/inbox/sync')
+async def api_inbox_sync():
+    try:
+        result = await inbox_sync.sync_inbox(db, limit=60)
+        return {'ok': True, **result}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f'IMAP sync failed: {exc}')
+
+
+@app.get('/api/inbox')
+async def api_inbox_list(limit: int = 100):
+    messages = await db.list_inbox(limit=min(limit, 300))
+    return {'messages': messages}
 
 
 @app.get('/', response_class=HTMLResponse)
@@ -177,7 +279,7 @@ async def api_campaigns():
     return {'campaigns': out}
 
 
-@app.post('/api/campaigns', dependencies=[Depends(require_token)])
+@app.post('/api/campaigns')
 async def api_create_campaign(
     name: str = Form(...),
     subject_template: str = Form(...),
@@ -200,7 +302,7 @@ async def api_list_steps(campaign_id: int):
     return {'steps': steps}
 
 
-@app.post('/api/campaigns/{campaign_id}/steps', dependencies=[Depends(require_token)])
+@app.post('/api/campaigns/{campaign_id}/steps')
 async def api_add_step(
     campaign_id: int,
     step_order: int = Form(...),
@@ -215,7 +317,7 @@ async def api_add_step(
     return {'ok': True}
 
 
-@app.post('/api/campaigns/{campaign_id}/attach', dependencies=[Depends(require_token)])
+@app.post('/api/campaigns/{campaign_id}/attach')
 async def api_attach_contacts(
     campaign_id: int,
     limit: int | None = Form(None),
@@ -225,7 +327,7 @@ async def api_attach_contacts(
     return {'ok': True, 'attached': attached}
 
 
-@app.post('/api/campaigns/{campaign_id}/status', dependencies=[Depends(require_token)])
+@app.post('/api/campaigns/{campaign_id}/status')
 async def api_campaign_status(campaign_id: int, status: str = Form(...)):
     if status not in ('draft', 'active', 'paused', 'done'):
         raise HTTPException(400, 'status must be draft|active|paused|done')
@@ -233,7 +335,7 @@ async def api_campaign_status(campaign_id: int, status: str = Form(...)):
     return {'ok': True}
 
 
-@app.post('/api/campaigns/{campaign_id}/run-once', dependencies=[Depends(require_token)])
+@app.post('/api/campaigns/{campaign_id}/run-once')
 async def api_run_campaign_once(campaign_id: int):
     """Process due sends right now (rate limits still apply)."""
     result = await campaign_engine.process_due_sends(db)
@@ -250,7 +352,7 @@ async def import_page(request: Request):
     return templates.TemplateResponse('import.html', {'request': request})
 
 
-@app.post('/api/import', dependencies=[Depends(require_token)])
+@app.post('/api/import')
 async def api_import(request: Request, file: UploadFile | None = File(None), text: str | None = Form(None)):
     raw_text = text or ''
     if file is not None:
@@ -305,7 +407,7 @@ async def _upsert_contact(contact: dict, fingerprint: str) -> tuple[int | None, 
         return int(cur.lastrowid), True
 
 
-@app.post('/api/import/enrich-events', dependencies=[Depends(require_token)])
+@app.post('/api/import/enrich-events')
 async def api_enrich_events():
     """Run event-intel extraction over imported leads that lack it."""
     rows = await db.list_leads(limit=10000)
@@ -337,7 +439,7 @@ async def pipeline_page(request: Request):
     return templates.TemplateResponse('pipeline.html', {'request': request, 'stages': stages})
 
 
-@app.post('/api/leads/{lead_id}/stage', dependencies=[Depends(require_token)])
+@app.post('/api/leads/{lead_id}/stage')
 async def api_set_stage(lead_id: int, stage: str = Form(...)):
     if stage not in PIPELINE_STAGES:
         raise HTTPException(400, f'stage must be one of {PIPELINE_STAGES}')
@@ -351,7 +453,7 @@ async def replies_page(request: Request):
     return templates.TemplateResponse('replies.html', {'request': request, 'replies': rows})
 
 
-@app.post('/api/inbox/poll', dependencies=[Depends(require_token)])
+@app.post('/api/inbox/poll')
 async def api_inbox_poll():
     async def tg_notify(text: str):  # optional Telegram alert on hot replies
         from app.outreach.telegram import send_telegram_message
@@ -402,7 +504,7 @@ async def campaign_new_page(request: Request):
     return templates.TemplateResponse('campaign_new.html', {'request': request})
 
 
-@app.post('/api/campaigns/create', dependencies=[Depends(require_token)])
+@app.post('/api/campaigns/create')
 async def api_create_campaign_form(
     name: str = Form(...),
     subject_template: str = Form(...),
@@ -425,7 +527,7 @@ async def api_create_campaign_form(
     return RedirectResponse(url='/campaigns', status_code=303)
 
 
-@app.post('/lead/{lead_id}/send-test', dependencies=[Depends(require_token)])
+@app.post('/lead/{lead_id}/send-test')
 async def send_test_to_self(lead_id: int):
     """Send the drafted message to the configured test address instead of the lead."""
     row = await db.get_lead(lead_id)
@@ -456,7 +558,7 @@ async def api_threads(lead_id: int | None = None):
 # ---------------------------------------------------------------------------
 
 
-@app.post('/api/leads/{lead_id}/notes', dependencies=[Depends(require_token)])
+@app.post('/api/leads/{lead_id}/notes')
 async def api_add_note(lead_id: int, note: str = Form(...), category: str = Form('general')):
     nid = await db.add_note(lead_id, note, category)
     await db.log_activity(lead_id, None, 'note', note[:100])
@@ -485,7 +587,7 @@ async def api_activity(lead_id: int):
 # ---------------------------------------------------------------------------
 
 
-@app.post('/api/campaigns/{campaign_id}/ab-variants', dependencies=[Depends(require_token)])
+@app.post('/api/campaigns/{campaign_id}/ab-variants')
 async def api_create_ab_variant(
     campaign_id: int,
     variant_name: str = Form(...),
@@ -537,7 +639,7 @@ async def api_verify_batch(request: Request):
 # ---------------------------------------------------------------------------
 
 
-@app.post('/api/leads/{lead_id}/enrich', dependencies=[Depends(require_token)])
+@app.post('/api/leads/{lead_id}/enrich')
 async def api_enrich_lead(lead_id: int):
     from app.enrichment import enrich_lead
     result = await enrich_lead(db, lead_id)
@@ -549,7 +651,7 @@ async def api_enrich_lead(lead_id: int):
 # ---------------------------------------------------------------------------
 
 
-@app.post('/api/webhooks', dependencies=[Depends(require_token)])
+@app.post('/api/webhooks')
 async def api_create_webhook(name: str = Form(...), url: str = Form(...),
                              events: str = Form('reply,interested')):
     wid = await db.add_webhook(name, url, events)
@@ -578,7 +680,7 @@ async def api_best_send_times(lead_id: int):
 # ---------------------------------------------------------------------------
 
 
-@app.post('/api/campaigns/{campaign_id}/verify', dependencies=[Depends(require_token)])
+@app.post('/api/campaigns/{campaign_id}/verify')
 async def api_verify_campaign(campaign_id: int):
     from app.verification import verify_email
     campaign = await db.get_campaign(campaign_id)

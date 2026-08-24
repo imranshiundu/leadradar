@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     # Optional shared-secret auth for mutating dashboard/API routes.
     dashboard_token: str | None = None
 
+    # Dashboard authentication (session-based).
+    auth_enabled: bool = True
+    admin_email: str = 'Imranshiundu@gmail.com'
+    admin_password: str | None = None
+
     auto_send_emails: bool = False
     require_manual_approval: bool = True
     respect_robots_txt: bool = True

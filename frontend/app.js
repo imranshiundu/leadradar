@@ -3,14 +3,21 @@ const CFG = {
   set api(v) { localStorage.setItem('lr_api', v); },
   get token() { return localStorage.getItem('lr_token') || ''; },
   set token(v) { localStorage.setItem('lr_token', v); },
+  get sess() { return localStorage.getItem('lr_sess') || ''; },
+  set sess(v) { v ? localStorage.setItem('lr_sess', v) : localStorage.removeItem('lr_sess'); },
 };
 
 async function req(path, opts = {}) {
   const h = Object.assign({}, opts.headers);
   if (CFG.token) h['X-Dashboard-Token'] = CFG.token;
+  if (CFG.sess) h['X-Session-Token'] = CFG.sess;
   let body = opts.body;
   if (body && !(body instanceof FormData)) { h['Content-Type'] = 'application/json'; body = JSON.stringify(body); }
   const r = await fetch(CFG.api + path, Object.assign({}, opts, { headers: h, body }));
+  if (r.status === 401 && !path.startsWith('/api/auth/')) {
+    window.dispatchEvent(new Event('lr-unauthorized'));
+    throw new Error('Session expired');
+  }
   if (!r.ok) {
     let msg = r.status + ' ' + r.statusText;
     try { const j = await r.json(); if (j.detail) msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail); } catch (e) {}
@@ -33,10 +40,6 @@ function timeago(iso) {
 function fmtDate(iso) { return iso ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : ''; }
 function copyTxt(t) { navigator.clipboard.writeText(t).catch(() => {}); }
 
-app.directive('ic', {
-  mounted(el, b) { renderIcon(el, b.value); },
-  updated(el, b) { if (el._i !== b.value) renderIcon(el, b.value); },
-});
 function renderIcon(el, name) {
   el._i = name;
   const inner = (window.LR_ICONS && LR_ICONS[name]) || '';
@@ -68,6 +71,18 @@ const App = {
       auto: Automations.load(),
       stages: STAGES,
       origin: location.origin,
+      sess: CFG.sess,
+      needAuth: false,
+      authRequired: false,
+      authMode: 'login',
+      authBusy: false,
+      authErr: '',
+      authMsg: '',
+      authForm: { email: localStorage.getItem('lr_last_email') || '', password: '', otp: '', newPassword: '' },
+      inboxMsgs: [],
+      inboxLoading: false,
+      inboxQ: '',
+      _inboxSynced: false,
     };
   },
   computed: {
@@ -127,21 +142,102 @@ const App = {
   },
   mounted() {
     window.addEventListener('hashchange', () => this.onRoute());
+    window.addEventListener('lr-unauthorized', () => this.forceLogin());
     window.addEventListener('keydown', e => {
       if (e.key === 'Escape' && this.modal) this.modal = null;
       if (e.key === '/' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); const s = this.$refs.search; s && s.focus(); }
     });
-    GET('/health').then(() => { this.conn = 'ok'; }).catch(() => { this.conn = 'err'; });
-    this.onRoute();
+    this.boot();
     setInterval(() => { this.auto = Automations.load(); }, 4000);
     setInterval(() => { if (this.auto.pollInbox) this.pollInbox(true); }, 15 * 60000);
     setInterval(() => { if (this.auto.autoRefresh && ['/','/leads','/campaigns','/replies'].includes(this.route)) this.routeData().catch(()=>{}); }, 30000);
   },
   methods: {
+    async boot() {
+      try {
+        const h = await GET('/health');
+        this.authRequired = !!h.auth_required;
+        this.conn = 'ok';
+      } catch (e) { this.conn = 'err'; }
+      if (this.authRequired && !this.sess) { this.needAuth = true; return; }
+      if (this.sess) {
+        try { await GET('/api/auth/me'); }
+        catch (e) { this.sess = ''; CFG.sess = ''; this.needAuth = true; return; }
+      }
+      this.onRoute();
+    },
+    forceLogin() {
+      this.sess = ''; CFG.sess = '';
+      this.needAuth = true;
+      this.modal = null;
+    },
+    async doLogin() {
+      this.authBusy = true; this.authErr = '';
+      try {
+        const r = await POSTJ('/api/auth/login', { email: this.authForm.email, password: this.authForm.password });
+        CFG.sess = r.token;
+        localStorage.setItem('lr_last_email', this.authForm.email);
+        this.sess = r.token;
+        this.needAuth = false;
+        this.conn = 'ok';
+        this.onRoute();
+        this.toast('Welcome back');
+      } catch (e) { this.authErr = e.message; }
+      this.authBusy = false;
+    },
+    async doForgot() {
+      this.authBusy = true; this.authErr = ''; this.authMsg = '';
+      try {
+        const r = await POSTJ('/api/auth/forgot', { email: this.authForm.email });
+        localStorage.setItem('lr_last_email', this.authForm.email);
+        this.authMsg = r.message || 'Draft created';
+        this.authMode = 'reset';
+      } catch (e) { this.authErr = e.message; }
+      this.authBusy = false;
+    },
+    async doReset() {
+      this.authBusy = true; this.authErr = '';
+      try {
+        const r = await POSTJ('/api/auth/reset', { email: this.authForm.email, otp: this.authForm.otp, new_password: this.authForm.newPassword });
+        this.authMsg = r.message || 'Password updated';
+        this.authForm.password = '';
+        this.authMode = 'login';
+      } catch (e) { this.authErr = e.message; }
+      this.authBusy = false;
+    },
+    async doLogout() {
+      try { await req('/api/auth/logout', { method: 'POST', body: {} }); } catch (e) {}
+      this.forceLogin();
+      this.authMode = 'login';
+      this.authForm.password = '';
+    },
+    async syncInbox() {
+      this.inboxLoading = true;
+      try {
+        const r = await POSTJ('/api/inbox/sync', {});
+        await this.loadInbox();
+        if (!this._inboxSilent) this.toast('Synced ' + r.fetched + ' emails (' + r.new + ' new)');
+        this._inboxSynced = true;
+      } catch (e) { if (!this._inboxSilent) this.toast(e.message, true); }
+      this.inboxLoading = false;
+    },
+    async loadInbox() {
+      try { this.inboxMsgs = (await GET('/api/inbox?limit=100')).messages || []; } catch (e) {}
+    },
+    filteredInbox() {
+      const q = this.inboxQ.trim().toLowerCase();
+      if (!q) return this.inboxMsgs;
+      return this.inboxMsgs.filter(m => [m.from_name, m.from_email, m.subject, m.snippet].some(v => (v || '').toLowerCase().includes(q)));
+    },
+    openLeadById(id) {
+      const l = this.leads.find(x => x.id === id);
+      if (l) this.openLead(l); else this.go('/leads');
+    },
     go(r) { location.hash = '#' + r; },
     onRoute() {
       this.route = location.hash.replace('#', '') || '/';
       this.sideOpen = false;
+      if (this.needAuth) return;
       this.routeData().catch(e => this.toast(e.message, true));
     },
     toast(msg, err) {
@@ -155,6 +251,10 @@ const App = {
       else if (r === '/leads' || r === '/pipeline') await this.loadLeads();
       else if (r === '/campaigns') await this.loadCampaigns(true);
       else if (r === '/replies') await this.loadReplies();
+      else if (r === '/inbox') {
+        await this.loadInbox();
+        if (!this._inboxSynced && !this.inboxMsgs.length) { this._inboxSilent = true; await this.syncInbox(); this._inboxSilent = false; }
+      }
       else if (r === '/analytics') { this.analytics = await GET('/api/analytics'); await this.loadCampaigns(true); }
     },
     async loadLeads(silent) {
@@ -280,7 +380,7 @@ const App = {
     },
   },
   template: `
-<div class="shell">
+<div class="shell" v-if="!needAuth">
   <aside class="side" :class="{open:sideOpen}">
     <div class="brand">
       <div class="brand-mark"><i v-ic="'radar'"></i></div>
@@ -293,6 +393,7 @@ const App = {
       <a href="#/campaigns" class="nav-item" :class="{on:route==='/campaigns'}"><i v-ic="'send'"></i> Campaigns</a>
       <a href="#/pipeline" class="nav-item" :class="{on:route==='/pipeline'}"><i v-ic="'square-kanban'"></i> Pipeline</a>
       <a href="#/replies" class="nav-item" :class="{on:route==='/replies'}"><i v-ic="'message-square'"></i> Replies <span class="n-count" v-if="navCounts['/replies']">{{navCounts['/replies']}}</span></a>
+      <a href="#/inbox" class="nav-item" :class="{on:route==='/inbox'}"><i v-ic="'mail'"></i> Inbox <span class="n-count" v-if="inboxMsgs.length">{{inboxMsgs.length}}</span></a>
       <a href="#/analytics" class="nav-item" :class="{on:route==='/analytics'}"><i v-ic="'bar-chart-3'"></i> Analytics</a>
       <div class="nav-label">System</div>
       <a href="#/settings" class="nav-item" :class="{on:route==='/settings'}"><i v-ic="'settings'"></i> Settings</a>
@@ -304,6 +405,7 @@ const App = {
           <div class="conn-txt">{{conn==='ok'?'Connected':conn==='err'?'Offline':'Connecting…'}}</div>
           <div class="conn-url">{{cfgApi}}</div>
         </div>
+        <button class="icon-btn" title="Sign out" @click="doLogout"><i v-ic="'log-out'"></i></button>
       </div>
     </div>
   </aside>
@@ -519,6 +621,36 @@ const App = {
         </div>
       </template>
 
+      <template v-else-if="route==='/inbox'">
+        <div class="page-head">
+          <div><div class="page-title">Inbox</div><div class="page-desc">{{inboxMsgs.length}} emails mirrored from your Gmail · newest first</div></div>
+          <button class="btn btn-g btn-sm" @click="syncInbox()" :disabled="inboxLoading"><i v-ic="'refresh-cw'"></i> {{inboxLoading?'Syncing…':'Sync now'}}</button>
+        </div>
+        <div class="search" style="max-width:none;margin-bottom:12px">
+          <i v-ic="'search'"></i>
+          <input v-model="inboxQ" placeholder="Filter by sender, subject, content…">
+        </div>
+        <div class="panel">
+          <div v-for="m in filteredInbox()" :key="m.message_id" class="mail-row" @click="m.lead_id&&openLeadById(m.lead_id)" :class="{linked:m.lead_id}">
+            <div class="mail-top">
+              <span class="mail-from">{{m.from_name||m.from_email}}</span>
+              <span class="bg bg-new" v-if="m.lead_id" title="Matched to a lead">lead</span>
+              <span class="mail-date mono dim">{{ago(m.date_utc)}}</span>
+            </div>
+            <div class="mail-subject">{{m.subject}}</div>
+            <div class="mail-snip dim" v-if="m.snippet">{{m.snippet}}</div>
+          </div>
+          <div v-if="inboxLoading&&!inboxMsgs.length" style="padding:18px">
+            <div class="skel" style="height:56px;margin-bottom:8px"></div><div class="skel" style="height:56px;margin-bottom:8px"></div><div class="skel" style="height:56px"></div>
+          </div>
+          <div v-if="!inboxLoading&&!filteredInbox().length" class="empty">
+            <div class="empty-ic"><i v-ic="'mail'"></i></div>
+            <div class="empty-t">No mail mirrored yet</div>
+            <div class="empty-d">Hit Sync now — the latest 60 messages from your INBOX are pulled in and matched to leads.</div>
+          </div>
+        </div>
+      </template>
+
       <template v-else-if="route==='/analytics'">
         <div class="page-head"><div><div class="page-title">Analytics</div><div class="page-desc">Volume, reply quality, per-campaign breakdown.</div></div></div>
         <div class="kpis">
@@ -631,10 +763,57 @@ const App = {
       <i v-ic="t.err?'alert-triangle':'check'"></i>{{t.msg}}
     </div>
   </div>
+</div>
+
+<div class="auth-wrap" v-else>
+  <div class="auth-brand">
+    <div class="auth-brand-inner">
+      <div class="brand-mark big"><i v-ic="'radar'"></i></div>
+      <h1>LeadRadar</h1>
+      <p>Outreach command center. Every lead, every reply, one radar.</p>
+    </div>
+  </div>
+  <div class="auth-side">
+    <form class="auth-card" @submit.prevent="authMode==='login'?doLogin():authMode==='forgot'?doForgot():doReset()">
+      <template v-if="authMode==='login'">
+        <h2>Sign in</h2>
+        <p class="hint" style="margin-top:2px">Use your admin email to access the dashboard.</p>
+        <label class="fl">Email</label>
+        <input type="email" v-model="authForm.email" required placeholder="you@company.com" autofocus>
+        <label class="fl">Password</label>
+        <input type="password" v-model="authForm.password" required placeholder="••••••••">
+        <button class="btn btn-p auth-btn" type="submit" :disabled="authBusy">{{authBusy?'Signing in…':'Sign in'}}</button>
+        <button type="button" class="auth-link" @click="authMode='forgot';authErr='';authMsg=''">Forgot password?</button>
+      </template>
+      <template v-else-if="authMode==='forgot'">
+        <h2>Recover access</h2>
+        <p class="hint" style="margin-top:2px">We drop a 6-digit code straight into your Gmail drafts. Nothing is emailed to anyone else.</p>
+        <label class="fl">Account email</label>
+        <input type="email" v-model="authForm.email" required placeholder="you@company.com">
+        <button class="btn btn-p auth-btn" type="submit" :disabled="authBusy">{{authBusy?'Creating draft…':'Send recovery code to drafts'}}</button>
+        <button type="button" class="auth-link" @click="authMode='login';authErr='';authMsg=''">← Back to sign in</button>
+      </template>
+      <template v-else>
+        <h2>Enter recovery code</h2>
+        <p class="hint" style="margin-top:2px">{{authMsg||'Check your Gmail drafts for the code.'}}</p>
+        <label class="fl">6-digit code</label>
+        <input class="otp-input" type="text" v-model="authForm.otp" required maxlength="6" inputmode="numeric" pattern="[0-9]*" placeholder="••••••">
+        <label class="fl">New password</label>
+        <input type="password" v-model="authForm.newPassword" required minlength="6" placeholder="At least 6 characters">
+        <button class="btn btn-p auth-btn" type="submit" :disabled="authBusy">{{authBusy?'Updating…':'Set new password'}}</button>
+        <button type="button" class="auth-link" @click="authMode='login';authErr='';authMsg=''">← Back to sign in</button>
+      </template>
+      <p v-if="authErr" class="auth-err"><i v-ic="'alert-triangle'"></i>{{authErr}}</p>
+    </form>
+  </div>
 </div>`,
 };
 
 const app = Vue.createApp(App);
+app.directive('ic', {
+  mounted(el, b) { renderIcon(el, b.value); },
+  updated(el, b) { if (el._i !== b.value) renderIcon(el, b.value); },
+});
 
 app.component('modal-shell', {
   props: { wide: Boolean },

@@ -83,6 +83,38 @@ class Database:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS auth_users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email TEXT NOT NULL UNIQUE,
+                    pass_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS auth_sessions (
+                    token TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES auth_users(id),
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS auth_otps (
+                    email TEXT PRIMARY KEY,
+                    otp_hash TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS inbox_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id TEXT NOT NULL UNIQUE,
+                    from_name TEXT,
+                    from_email TEXT,
+                    subject TEXT,
+                    date_utc TEXT,
+                    snippet TEXT,
+                    lead_id INTEGER REFERENCES leads(id),
+                    fetched_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS campaigns (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
@@ -848,3 +880,128 @@ class Database:
                 await self.add_event('webhook:sent', {'webhook_id': wh['id'], 'event': event_type})
             except Exception as exc:  # noqa: BLE001
                 await self.add_event('webhook:error', {'webhook_id': wh['id'], 'error': str(exc)})
+
+    # ------------------------------------------------------------------
+    # Auth: users, sessions, OTP codes
+    # ------------------------------------------------------------------
+
+    async def get_user_by_email(self, email: str) -> dict | None:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute('SELECT * FROM auth_users WHERE lower(email)=lower(?)', (email,))
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+    async def count_users(self) -> int:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute('SELECT COUNT(*) AS n FROM auth_users')
+            return int((await cur.fetchone())['n'])
+
+    async def create_user(self, email: str, pass_hash: str) -> int:
+        async with self.connect() as db:
+            cur = await db.execute(
+                'INSERT INTO auth_users(email, pass_hash, created_at) VALUES (?, ?, ?)',
+                (email.lower(), pass_hash, utc_now()))
+            await db.commit()
+            return int(cur.lastrowid)
+
+    async def update_password(self, user_id: int, pass_hash: str) -> None:
+        async with self.connect() as db:
+            await db.execute('UPDATE auth_users SET pass_hash=? WHERE id=?', (pass_hash, user_id))
+            await db.commit()
+
+    async def create_session(self, user_id: int, token: str, days: int = 30) -> str:
+        expires = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat(timespec='seconds')
+        async with self.connect() as db:
+            await db.execute(
+                'INSERT INTO auth_sessions(token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)',
+                (token, user_id, utc_now(), expires))
+            await db.commit()
+        return expires
+
+    async def get_session(self, token: str) -> dict | None:
+        if not token:
+            return None
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                'SELECT s.*, u.email FROM auth_sessions s JOIN auth_users u ON u.id=s.user_id WHERE s.token=?',
+                (token,))
+            row = await cur.fetchone()
+            if not row:
+                return None
+            session = dict(row)
+        if session['expires_at'] < utc_now():
+            await self.delete_session(token)
+            return None
+        return session
+
+    async def delete_session(self, token: str) -> None:
+        async with self.connect() as db:
+            await db.execute('DELETE FROM auth_sessions WHERE token=?', (token,))
+            await db.commit()
+
+    async def set_otp(self, email: str, otp_hash: str, minutes: int = 15) -> None:
+        expires = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat(timespec='seconds')
+        async with self.connect() as db:
+            await db.execute(
+                '''INSERT INTO auth_otps(email, otp_hash, expires_at) VALUES (?, ?, ?)
+                   ON CONFLICT(email) DO UPDATE SET otp_hash=excluded.otp_hash, expires_at=excluded.expires_at''',
+                (email.lower(), otp_hash, expires))
+            await db.commit()
+
+    async def consume_otp(self, email: str, otp: str) -> bool:
+        from app.auth import verify_hash
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute('SELECT * FROM auth_otps WHERE lower(email)=lower(?)', (email,))
+            row = await cur.fetchone()
+            if not row:
+                return False
+            rec = dict(row)
+            if rec['expires_at'] < utc_now() or not verify_hash(otp or '', rec['otp_hash']):
+                return False
+            await db.execute('DELETE FROM auth_otps WHERE lower(email)=lower(?)', (email,))
+            await db.commit()
+            return True
+
+    # ------------------------------------------------------------------
+    # Inbox mirror of the real mailbox
+    # ------------------------------------------------------------------
+
+    async def upsert_inbox_message(self, msg: dict) -> bool:
+        async with self.connect() as db:
+            cur = await db.execute(
+                '''INSERT OR IGNORE INTO inbox_messages
+                   (message_id, from_name, from_email, subject, date_utc, snippet, lead_id, fetched_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                (msg['message_id'], msg.get('from_name'), msg.get('from_email'),
+                 msg.get('subject'), msg.get('date_utc'), msg.get('snippet'),
+                 msg.get('lead_id'), utc_now()))
+            await db.commit()
+            return cur.rowcount > 0
+
+    async def list_inbox(self, limit: int = 100) -> list[dict]:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                '''SELECT m.*, l.name AS lead_name FROM inbox_messages m
+                   LEFT JOIN leads l ON l.id = m.lead_id
+                   ORDER BY COALESCE(m.date_utc, m.fetched_at) DESC LIMIT ?''', (limit,))
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def match_lead_by_email(self, email: str | None) -> int | None:
+        if not email:
+            return None
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute('SELECT id FROM leads WHERE lower(email)=lower(?) LIMIT 1', (email.strip(),))
+            row = await cur.fetchone()
+            return int(row['id']) if row else None
+
+    async def inbox_count(self) -> int:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute('SELECT COUNT(*) AS n FROM inbox_messages')
+            return int((await cur.fetchone())['n'])
