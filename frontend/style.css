@@ -299,6 +299,30 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 .cs-v{font-size:1.25rem}
 .mini-sel{width:auto;padding:5px 30px 5px 12px;font-size:.74rem;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235f6b63' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center;appearance:none;background-color:var(--bg);border:1px solid var(--line2);color:var(--text);border-radius:99px}
 
+/* ── Discovery panels ────────────────────── */
+.disco-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+.disco-input-row{display:flex;gap:8px}
+.disco-input-row input{flex:1}
+.disco-list{max-height:200px;overflow-y:auto;border:1px solid var(--line);border-radius:var(--r-sm);padding:4px}
+.disco-list-item{display:flex;align-items:center;gap:8px;padding:5px 8px;cursor:pointer;border-radius:5px;transition:background .1s;font-size:.78rem}
+.disco-list-item:hover{background:var(--raised)}
+.disco-list-item input[type=checkbox]{accent-color:var(--acc);flex-shrink:0}
+.disco-list-item .mono{font-size:.72rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.disco-status{margin-top:10px;padding:10px 12px;border-radius:var(--r-sm);font-size:.8rem;line-height:1.5}
+.disco-status.ok{background:var(--acc-soft);border:1px solid var(--acc-line)}
+.disco-status.running{background:var(--amber-soft);border:1px solid rgba(251,191,36,.28)}
+.disco-badge{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:99px;font-size:.6rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;background:var(--acc-soft);color:var(--acc)}
+.disco-badge::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor}
+.disco-prog{height:3px;background:var(--raised);border-radius:2px;overflow:hidden;margin-top:8px}
+.disco-prog i{display:block;height:100%;background:var(--acc);border-radius:2px;transition:width .4s var(--ease)}
+.disco-results{max-height:160px;overflow-y:auto;border:1px solid var(--line);border-radius:var(--r-sm);padding:8px;font-family:var(--mono);font-size:.72rem;line-height:1.9}
+.disco-email-row{display:flex;align-items:center;gap:8px;padding:2px 0}
+.disco-email-row span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.disco-copy{opacity:0;transition:opacity .12s;cursor:pointer;color:var(--dim)}
+.disco-email-row:hover .disco-copy{opacity:1}
+.disco-copy:hover{color:var(--acc)}
+.disco-tag{font-size:.58rem;padding:1px 5px;border-radius:4px;background:var(--raised);color:var(--dim);font-weight:600;letter-spacing:.03em;flex-shrink:0}
+
 .auth-wrap{position:fixed;inset:0;display:grid;grid-template-columns:1.1fr 1fr;background:var(--bg);z-index:300}
 .auth-brand{position:relative;display:flex;align-items:center;justify-content:center;border-right:1px solid var(--line);overflow:hidden;background:radial-gradient(700px 420px at 30% 40%,rgba(52,211,153,.09),transparent 65%)}
 .auth-brand::before,.auth-brand::after{content:'';position:absolute;border-radius:50%;border:1px solid var(--acc-line);opacity:.35}

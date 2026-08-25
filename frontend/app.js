@@ -105,12 +105,17 @@ const App = {
       ctSubdomains: [],
       ctLoading: false,
       ctSelected: new Set(),
+      ctFilter: '',
       ctCrawling: false,
       ctResult: null,
+      ctProgress: { done: 0, total: 0, phase: '' },
+      ctImported: [],
       egDomain: '',
       egNames: '',
       egGuesses: [],
       egLoading: false,
+      egImporting: false,
+      egImported: new Set(),
       _discoTimer: null,
       _inboxSynced: false,
     };
@@ -187,6 +192,11 @@ const App = {
         out.push({ color: '#34d399', text: enrichable + ' high-priority leads have no website data — enrichment is off.', label: '', run: null });
       }
       return out.slice(0, 6);
+    },
+    ctFilteredSubs() {
+      const q = this.ctFilter.trim().toLowerCase();
+      if (!q) return this.ctSubdomains;
+      return this.ctSubdomains.filter(s => s.includes(q));
     },
   },
   mounted() {
@@ -486,6 +496,7 @@ const App = {
     async ctLookup() {
       if (!this.ctDomain || this.ctLoading) return;
       this.ctLoading = true; this.ctSubdomains = []; this.ctResult = null;
+      this.ctFilter = ''; this.ctImported = [];
       try {
         const r = await POSTJ('/api/discovery/ct-lookup', { domain: this.ctDomain });
         this.ctSubdomains = r.subdomains || [];
@@ -495,10 +506,10 @@ const App = {
       this.ctLoading = false;
     },
     ctToggleAll() {
-      if (this.ctSelected.size === this.ctSubdomains.length) {
+      if (this.ctSelected.size === this.ctFilteredSubs.length) {
         this.ctSelected = new Set();
       } else {
-        this.ctSelected = new Set(this.ctSubdomains);
+        this.ctSelected = new Set(this.ctFilteredSubs);
       }
     },
     ctToggleSub(s) {
@@ -506,22 +517,36 @@ const App = {
       else this.ctSelected.add(s);
       this.ctSelected = new Set(this.ctSelected);
     },
+    ctImportOne(sub) {
+      if (this.ctCrawling) return;
+      this.ctCrawling = true;
+      POSTJ('/api/discovery/ct-crawl', { domain: this.ctDomain, subdomains: [sub] }).then(r => {
+        if (r.added > 0) { this.ctImported.push(sub); this.toast('Imported from ' + sub); }
+        else this.toast('No emails found on ' + sub);
+      }).catch(e => this.toast(e.message, true));
+      this.ctCrawling = false;
+    },
     async ctCrawl() {
       if (this.ctCrawling) return;
       const subs = [...this.ctSelected];
       if (!subs.length) return this.toast('Select subdomains first', true);
       this.ctCrawling = true; this.ctResult = null;
+      this.ctProgress = { done: 0, total: subs.length, phase: 'Starting…' };
+      this.ctImported = [];
       try {
         const r = await POSTJ('/api/discovery/ct-crawl', { domain: this.ctDomain, subdomains: subs });
         this.ctResult = r;
+        this.ctProgress = { done: r.crawled, total: subs.length, phase: 'Done' };
+        this.ctImported = subs.slice(0, Math.max(r.added, 0));
         this.toast('Crawled ' + r.crawled + ' subdomains — imported ' + r.added + ' new hosts');
         await this.refreshOutboxStats();
       } catch (e) { this.toast(e.message, true); }
       this.ctCrawling = false;
     },
+    ctCopyEmail(e) { navigator.clipboard.writeText(e); this.toast('Copied ' + e); },
     async emailGuess() {
       if (!this.egDomain || this.egLoading) return;
-      this.egLoading = true; this.egGuesses = [];
+      this.egLoading = true; this.egGuesses = []; this.egImported = new Set();
       try {
         const r = await POSTJ('/api/discovery/email-guess', { domain: this.egDomain, names: this.egNames });
         this.egGuesses = r.guesses || [];
@@ -530,12 +555,24 @@ const App = {
       this.egLoading = false;
     },
     async emailGuessImport() {
-      if (!this.egGuesses.length) return;
-      const items = this.egGuesses.map(e => ({ email: e, name: '', source: 'email-guess' }));
+      if (!this.egGuesses.length || this.egImporting) return;
+      this.egImporting = true;
+      const items = this.egGuesses.filter(e => !this.egImported.has(e)).map(e => ({ email: e, name: '', source: 'email-guess' }));
       try {
         const r = await POSTJ('/api/leads/import-emails', { items });
+        this.egGuesses.filter(e => !this.egImported.has(e)).forEach(e => this.egImported.add(e));
         this.toast('Imported ' + r.added + ' from ' + r.total + ' guesses');
         await this.refreshOutboxStats();
+      } catch (e) { this.toast(e.message, true); }
+      this.egImporting = false;
+    },
+    async egImportOne(email) {
+      try {
+        const r = await POSTJ('/api/leads/import-emails', { items: [{ email, name: '', source: 'email-guess' }] });
+        this.egImported.add(email);
+        this.egImported = new Set(this.egImported);
+        if (r.added > 0) this.toast('Imported ' + email);
+        else this.toast('Already exists: ' + email);
       } catch (e) { this.toast(e.message, true); }
     },
     async purgeNonHosts() {
@@ -1155,49 +1192,95 @@ const App = {
           </div>
         </div>
 
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+        <div class="disco-grid">
+          <!-- CT Subdomain Lookup -->
           <div class="panel">
-            <div class="panel-h"><span class="panel-t">CT Subdomain Lookup</span><span class="panel-s">crt.name · free</span></div>
+            <div class="panel-h">
+              <span class="panel-t">CT Subdomain Lookup</span>
+              <span class="disco-badge">crt.name free</span>
+            </div>
             <div style="padding:16px 18px">
-              <p class="mut" style="font-size:.8rem;margin-bottom:10px">Enter a domain to discover all subdomains from Certificate Transparency logs. Then crawl them for organizer emails.</p>
-              <div style="display:flex;gap:8px">
-                <input type="text" v-model="ctDomain" placeholder="eventbrite.co.ke" @keydown.enter="ctLookup()" style="flex:1">
-                <button class="btn btn-p btn-sm" @click="ctLookup()" :disabled="ctLoading||!ctDomain">{{ctLoading?'Looking up…':'Look up'}}</button>
+              <p class="mut" style="font-size:.78rem;margin-bottom:12px">Discover every subdomain from Certificate Transparency logs, then crawl them for organizer email addresses.</p>
+
+              <div class="disco-input-row">
+                <input type="text" v-model="ctDomain" placeholder="eventbrite.co.ke" @keydown.enter="ctLookup()">
+                <button class="btn btn-p btn-sm" @click="ctLookup()" :disabled="ctLoading||!ctDomain">
+                  <template v-if="ctLoading"><i v-ic="'loader'"></i> Scanning…</template>
+                  <template v-else><i v-ic="'search'"></i> Look up</template>
+                </button>
               </div>
-              <div v-if="ctSubdomains.length" style="margin-top:12px">
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-                  <span class="mono dim" style="font-size:.68rem">{{ctSelected.size}}/{{ctSubdomains.length}} selected</span>
-                  <button class="btn btn-o btn-xs" @click="ctToggleAll()">{{ctSelected.size===ctSubdomains.length?'Deselect all':'Select all'}}</button>
+
+              <div v-if="ctSubdomains.length" style="margin-top:14px">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                  <span class="dim" style="font-size:.72rem;flex:1">{{ctSelected.size}}/{{ctFilteredSubs.length}} selected</span>
+                  <button class="btn btn-o btn-xs" @click="ctToggleAll()">{{ctSelected.size===ctFilteredSubs.length?'Deselect':'Select all'}}</button>
                 </div>
-                <div style="max-height:180px;overflow-y:auto;border:1px solid var(--line);border-radius:var(--r-sm);padding:6px">
-                  <label v-for="s in ctSubdomains" :key="s" style="display:flex;align-items:center;gap:8px;padding:3px 6px;cursor:pointer;border-radius:4px;transition:background .1s;font-size:.78rem" @mouseenter="$event.currentTarget.style.background='var(--raised)'" @mouseleave="$event.currentTarget.style.background=''">
-                    <input type="checkbox" :checked="ctSelected.has(s)" @change="ctToggleSub(s)" style="accent-color:var(--acc)">
-                    <span class="mono" style="font-size:.72rem">{{s}}</span>
+                <div style="position:relative;margin-bottom:8px">
+                  <i v-ic="'search'" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);width:13px;height:13px;color:var(--dim)"></i>
+                  <input type="text" v-model="ctFilter" placeholder="filter subdomains…" style="width:100%;padding-left:30px;font-size:.78rem">
+                </div>
+                <div class="disco-list">
+                  <label v-for="s in ctFilteredSubs" :key="s" class="disco-list-item" :style="ctImported.includes(s)?'opacity:.45':''">
+                    <input type="checkbox" :checked="ctSelected.has(s)" @change="ctToggleSub(s)">
+                    <span class="mono">{{s}}</span>
+                    <span v-if="ctImported.includes(s)" class="disco-tag">imported</span>
                   </label>
                 </div>
-                <button class="btn btn-p btn-sm" style="margin-top:10px;width:100%" @click="ctCrawl()" :disabled="ctCrawling||!ctSelected.size">{{ctCrawling?'Crawling subdomains…':'Crawl for emails → '+ctSelected.size+' targets'}}</button>
-                <div v-if="ctResult" style="margin-top:8px;padding:8px 10px;background:var(--acc-soft);border:1px solid var(--acc-line);border-radius:var(--r-sm);font-size:.78rem">
-                  Crawled {{ctResult.crawled}} subdomains — <strong>imported {{ctResult.added}} new hosts</strong>
+
+                <!-- progress bar while crawling -->
+                <div v-if="ctCrawling" style="margin-top:10px">
+                  <div class="disco-prog"><i :style="'width:'+(ctProgress.total?Math.round(ctProgress.done/ctProgress.total*100):0)+'%'"></i></div>
+                  <div class="dim" style="font-size:.68rem;margin-top:4px">{{ctProgress.done}} / {{ctProgress.total}} subdomains crawled</div>
+                </div>
+
+                <button class="btn btn-p btn-sm" style="margin-top:10px;width:100%" @click="ctCrawl()" :disabled="ctCrawling||!ctSelected.size">
+                  <template v-if="ctCrawling">Crawling {{ctProgress.done}}/{{ctProgress.total}}…</template>
+                  <template v-else><i v-ic="'download'"></i> Crawl {{ctSelected.size}} subdomains for emails</template>
+                </button>
+
+                <div v-if="ctResult" class="disco-status ok" style="margin-top:10px">
+                  <div><strong>imported {{ctResult.added}}</strong> new hosts from {{ctResult.crawled}} subdomains</div>
                 </div>
               </div>
             </div>
           </div>
 
+          <!-- Email Pattern Guess -->
           <div class="panel">
-            <div class="panel-h"><span class="panel-t">Email Pattern Guess</span><span class="panel-s">bulk format guess</span></div>
+            <div class="panel-h">
+              <span class="panel-t">Email Pattern Guess</span>
+              <span class="panel-s">bulk format guess</span>
+            </div>
             <div style="padding:16px 18px">
-              <p class="mut" style="font-size:.8rem;margin-bottom:10px">Guess email addresses for a domain. Enter known names (comma-separated) or leave empty for common role accounts (info@, hello@, events@…).</p>
+              <p class="mut" style="font-size:.78rem;margin-bottom:12px">Guess email addresses for a domain. Enter names or leave empty for role accounts (info@, hello@, events@…).</p>
+
               <label class="fl">Domain</label>
               <input type="text" v-model="egDomain" placeholder="planner.co.ke" @keydown.enter="emailGuess()">
-              <label class="fl">Known names (optional)</label>
+
+              <label class="fl">Known names <span class="dim">(comma-separated, optional)</span></label>
               <textarea v-model="egNames" rows="2" placeholder="John Mwangi, Sarah Ochieng, events team…"></textarea>
-              <button class="btn btn-p btn-sm" style="margin-top:10px;width:100%" @click="emailGuess()" :disabled="egLoading||!egDomain">{{egLoading?'Guessing…':'Generate email guesses'}}</button>
-              <div v-if="egGuesses.length" style="margin-top:10px">
-                <div class="mono dim" style="font-size:.68rem;margin-bottom:6px">{{egGuesses.length}} patterns generated</div>
-                <div style="max-height:140px;overflow-y:auto;border:1px solid var(--line);border-radius:var(--r-sm);padding:8px;font-family:var(--mono);font-size:.72rem;line-height:1.8">
-                  <div v-for="e in egGuesses" :key="e" style="color:var(--mut)">{{e}}</div>
+
+              <button class="btn btn-p btn-sm" style="margin-top:10px;width:100%" @click="emailGuess()" :disabled="egLoading||!egDomain">
+                <template v-if="egLoading"><i v-ic="'loader'"></i> Generating…</template>
+                <template v-else><i v-ic="'mail'"></i> Generate email guesses</template>
+              </button>
+
+              <div v-if="egGuesses.length" style="margin-top:14px">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+                  <span class="dim" style="font-size:.68rem">{{egGuesses.length}} patterns · {{egGuesses.length - egImported.size}} remaining</span>
                 </div>
-                <button class="btn btn-g btn-sm" style="margin-top:10px;width:100%" @click="emailGuessImport()"><i v-ic="'download'"></i> Import all as leads</button>
+                <div class="disco-results">
+                  <div v-for="e in egGuesses" :key="e" class="disco-email-row" :style="egImported.has(e)?'opacity:.4':''">
+                    <span>{{e}}</span>
+                    <i v-if="!egImported.has(e)" v-ic="'copy'" class="disco-copy" @click.stop="ctCopyEmail(e)" title="Copy"></i>
+                    <i v-if="!egImported.has(e)" v-ic="'plus'" class="disco-copy" @click.stop="egImportOne(e)" title="Import this one"></i>
+                    <i v-if="egImported.has(e)" v-ic="'check'" style="color:var(--green);width:13px;height:13px;flex-shrink:0"></i>
+                  </div>
+                </div>
+                <button class="btn btn-g btn-sm" style="margin-top:10px;width:100%" @click="emailGuessImport()" :disabled="egImporting||egGuesses.length===egImported.size">
+                  <template v-if="egImporting"><i v-ic="'loader'"></i> Importing…</template>
+                  <template v-else><i v-ic="'download'"></i> Import all as leads</template>
+                </button>
               </div>
             </div>
           </div>
