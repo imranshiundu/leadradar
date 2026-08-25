@@ -427,6 +427,112 @@ async def api_discovery_status():
     return {'ok': True, **host_finder.status()}
 
 
+@app.post('/api/discovery/ct-lookup')
+async def api_ct_lookup(request: Request):
+    """Query crt.name for subdomains of a domain. Returns subdomains list."""
+    body = await request.json()
+    domain = (body.get('domain') or '').strip().lower()
+    if not domain or '.' not in domain:
+        raise HTTPException(400, 'Provide a valid domain (e.g. taptap.africa)')
+    import httpx as _httpx
+    subs = []
+    try:
+        async with _httpx.AsyncClient(timeout=12) as cx:
+            r = await cx.get('https://crt.name/v1/search', params={'apex': domain})
+            if r.status_code == 200:
+                for line in r.text.strip().splitlines():
+                    s = line.strip().lower()
+                    if s and s != domain and '*' not in s and s not in subs:
+                        subs.append(s)
+    except Exception:
+        pass
+    return {'ok': True, 'domain': domain, 'subdomains': subs, 'count': len(subs)}
+
+
+@app.post('/api/discovery/ct-crawl')
+async def api_ct_crawl(request: Request):
+    """Crawl subdomains from crt.name for emails, then import as leads."""
+    body = await request.json()
+    domain = (body.get('domain') or '').strip().lower()
+    subdomains = body.get('subdomains') or []
+    if not domain:
+        raise HTTPException(400, 'Provide a domain')
+    if not subdomains:
+        import httpx as _httpx
+        try:
+            async with _httpx.AsyncClient(timeout=12) as cx:
+                r = await cx.get('https://crt.name/v1/search', params={'apex': domain})
+                if r.status_code == 200:
+                    for line in r.text.strip().splitlines():
+                        s = line.strip().lower()
+                        if s and s != domain and '*' not in s and s not in subdomains:
+                            subdomains.append(s)
+        except Exception:
+            pass
+
+    existing = {(dict(r).get('email') or '').lower() for r in await db.list_leads(limit=10000)}
+    added = crawled = 0
+    import httpx as _httpx
+    _EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
+    _BAD_EXT = re.compile(r'\.(png|jpe?g|gif|webp|svg|css|js|ico)$', re.I)
+    async with _httpx.AsyncClient(timeout=10, follow_redirects=True,
+                                  headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0'}) as cx:
+        for sub in subdomains[:100]:
+            for scheme in ('https', 'http'):
+                try:
+                    pr = await cx.get(f'{scheme}://{sub}')
+                    if pr.status_code < 400:
+                        body_text = re.sub(r'<[^>]+>', ' ', pr.text)
+                        emails = []
+                        for m in _EMAIL_RE.findall(body_text):
+                            e = m.strip('.').lower()
+                            if not _BAD_EXT.search(e) and len(e) < 80 and e not in existing:
+                                emails.append(e)
+                        if emails:
+                            pairs = [(e, f'crt.name:{sub[:50]}') for e in emails[:5]]
+                            n = await host_finder.insert_hosts(db, existing, pairs)
+                            added += n
+                            for e in emails[:5]:
+                                existing.add(e)
+                        crawled += 1
+                        break
+                except Exception:
+                    continue
+            await asyncio.sleep(0.25)
+
+    return {'ok': True, 'domain': domain, 'crawled': crawled,
+            'added': added, 'leads_total': await db.count_leads()}
+
+
+@app.post('/api/discovery/email-guess')
+async def api_email_guess(request: Request):
+    """Guess email addresses for a domain using common patterns + SMTP probe."""
+    body = await request.json()
+    domain = (body.get('domain') or '').strip().lower()
+    names_text = (body.get('names') or '').strip()
+    if not domain or '.' not in domain:
+        raise HTTPException(400, 'Provide a valid domain')
+    names = [n.strip() for n in re.split(r'[,\n\t]+', names_text) if n.strip()]
+    if not names:
+        names = ['info', 'hello', 'contact', 'events', 'bookings', 'team', 'admin', 'office', 'sales', 'support']
+    patterns = ['{first}.{last}', '{first}{last}', '{first}_{last}', '{f}{last}', '{first}', '{l}']
+    guesses = set()
+    for name in names:
+        parts = name.lower().split()
+        if len(parts) >= 2:
+            f, l = parts[0], parts[-1]
+            fl, ll = f[0], l[0]
+            for pat in patterns:
+                guesses.add(pat.format(first=f, last=l, f=fl, l=ll) + '@' + domain)
+        else:
+            base = parts[0] if parts else name.lower()
+            guesses.add(base + '@' + domain)
+            guesses.add(base + '1' + '@' + domain)
+    guesses.discard('')
+    guess_list = sorted(guesses)[:50]
+    return {'ok': True, 'domain': domain, 'guesses': guess_list, 'count': len(guess_list)}
+
+
 def _chunk_bcc(emails: list[str], cap: int = _BCC_RECIPIENT_CAP) -> list[list[str]]:
     return [emails[i:i + cap] for i in range(0, len(emails), cap)]
 

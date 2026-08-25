@@ -101,6 +101,16 @@ const App = {
       bccResult: null,
       bccPreview: null,
       harvestText: '',
+      ctDomain: '',
+      ctSubdomains: [],
+      ctLoading: false,
+      ctSelected: new Set(),
+      ctCrawling: false,
+      ctResult: null,
+      egDomain: '',
+      egNames: '',
+      egGuesses: [],
+      egLoading: false,
       _discoTimer: null,
       _inboxSynced: false,
     };
@@ -472,6 +482,61 @@ const App = {
         await this.refreshOutboxStats();
       } catch (e) { this.toast(e.message, true); }
       this._rescoring = false;
+    },
+    async ctLookup() {
+      if (!this.ctDomain || this.ctLoading) return;
+      this.ctLoading = true; this.ctSubdomains = []; this.ctResult = null;
+      try {
+        const r = await POSTJ('/api/discovery/ct-lookup', { domain: this.ctDomain });
+        this.ctSubdomains = r.subdomains || [];
+        this.ctSelected = new Set(r.subdomains || []);
+        this.toast(r.count + ' subdomains found for ' + r.domain);
+      } catch (e) { this.toast(e.message, true); }
+      this.ctLoading = false;
+    },
+    ctToggleAll() {
+      if (this.ctSelected.size === this.ctSubdomains.length) {
+        this.ctSelected = new Set();
+      } else {
+        this.ctSelected = new Set(this.ctSubdomains);
+      }
+    },
+    ctToggleSub(s) {
+      if (this.ctSelected.has(s)) this.ctSelected.delete(s);
+      else this.ctSelected.add(s);
+      this.ctSelected = new Set(this.ctSelected);
+    },
+    async ctCrawl() {
+      if (this.ctCrawling) return;
+      const subs = [...this.ctSelected];
+      if (!subs.length) return this.toast('Select subdomains first', true);
+      this.ctCrawling = true; this.ctResult = null;
+      try {
+        const r = await POSTJ('/api/discovery/ct-crawl', { domain: this.ctDomain, subdomains: subs });
+        this.ctResult = r;
+        this.toast('Crawled ' + r.crawled + ' subdomains — imported ' + r.added + ' new hosts');
+        await this.refreshOutboxStats();
+      } catch (e) { this.toast(e.message, true); }
+      this.ctCrawling = false;
+    },
+    async emailGuess() {
+      if (!this.egDomain || this.egLoading) return;
+      this.egLoading = true; this.egGuesses = [];
+      try {
+        const r = await POSTJ('/api/discovery/email-guess', { domain: this.egDomain, names: this.egNames });
+        this.egGuesses = r.guesses || [];
+        this.toast(r.count + ' email guesses for ' + r.domain);
+      } catch (e) { this.toast(e.message, true); }
+      this.egLoading = false;
+    },
+    async emailGuessImport() {
+      if (!this.egGuesses.length) return;
+      const items = this.egGuesses.map(e => ({ email: e, name: '', source: 'email-guess' }));
+      try {
+        const r = await POSTJ('/api/leads/import-emails', { items });
+        this.toast('Imported ' + r.added + ' from ' + r.total + ' guesses');
+        await this.refreshOutboxStats();
+      } catch (e) { this.toast(e.message, true); }
     },
     async purgeNonHosts() {
       if (!window.confirm('Mark all non-hosts as rejected? Sent contacts are kept.')) return;
@@ -1087,6 +1152,54 @@ const App = {
             <label class="fl">Or paste emails / page text</label>
             <textarea v-model="harvestText" rows="4" placeholder="info@planner.co.ke, hello@events.co.ke… or Ctrl+A Ctrl+C a whole directory page and paste it here"></textarea>
             <button class="btn btn-g btn-sm" style="margin-top:8px" @click="harvestPaste()">Harvest pasted content</button>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+          <div class="panel">
+            <div class="panel-h"><span class="panel-t">CT Subdomain Lookup</span><span class="panel-s">crt.name · free</span></div>
+            <div style="padding:16px 18px">
+              <p class="mut" style="font-size:.8rem;margin-bottom:10px">Enter a domain to discover all subdomains from Certificate Transparency logs. Then crawl them for organizer emails.</p>
+              <div style="display:flex;gap:8px">
+                <input type="text" v-model="ctDomain" placeholder="eventbrite.co.ke" @keydown.enter="ctLookup()" style="flex:1">
+                <button class="btn btn-p btn-sm" @click="ctLookup()" :disabled="ctLoading||!ctDomain">{{ctLoading?'Looking up…':'Look up'}}</button>
+              </div>
+              <div v-if="ctSubdomains.length" style="margin-top:12px">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                  <span class="mono dim" style="font-size:.68rem">{{ctSelected.size}}/{{ctSubdomains.length}} selected</span>
+                  <button class="btn btn-o btn-xs" @click="ctToggleAll()">{{ctSelected.size===ctSubdomains.length?'Deselect all':'Select all'}}</button>
+                </div>
+                <div style="max-height:180px;overflow-y:auto;border:1px solid var(--line);border-radius:var(--r-sm);padding:6px">
+                  <label v-for="s in ctSubdomains" :key="s" style="display:flex;align-items:center;gap:8px;padding:3px 6px;cursor:pointer;border-radius:4px;transition:background .1s;font-size:.78rem" @mouseenter="$event.currentTarget.style.background='var(--raised)'" @mouseleave="$event.currentTarget.style.background=''">
+                    <input type="checkbox" :checked="ctSelected.has(s)" @change="ctToggleSub(s)" style="accent-color:var(--acc)">
+                    <span class="mono" style="font-size:.72rem">{{s}}</span>
+                  </label>
+                </div>
+                <button class="btn btn-p btn-sm" style="margin-top:10px;width:100%" @click="ctCrawl()" :disabled="ctCrawling||!ctSelected.size">{{ctCrawling?'Crawling subdomains…':'Crawl for emails → '+ctSelected.size+' targets'}}</button>
+                <div v-if="ctResult" style="margin-top:8px;padding:8px 10px;background:var(--acc-soft);border:1px solid var(--acc-line);border-radius:var(--r-sm);font-size:.78rem">
+                  Crawled {{ctResult.crawled}} subdomains — <strong>imported {{ctResult.added}} new hosts</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-h"><span class="panel-t">Email Pattern Guess</span><span class="panel-s">bulk format guess</span></div>
+            <div style="padding:16px 18px">
+              <p class="mut" style="font-size:.8rem;margin-bottom:10px">Guess email addresses for a domain. Enter known names (comma-separated) or leave empty for common role accounts (info@, hello@, events@…).</p>
+              <label class="fl">Domain</label>
+              <input type="text" v-model="egDomain" placeholder="planner.co.ke" @keydown.enter="emailGuess()">
+              <label class="fl">Known names (optional)</label>
+              <textarea v-model="egNames" rows="2" placeholder="John Mwangi, Sarah Ochieng, events team…"></textarea>
+              <button class="btn btn-p btn-sm" style="margin-top:10px;width:100%" @click="emailGuess()" :disabled="egLoading||!egDomain">{{egLoading?'Guessing…':'Generate email guesses'}}</button>
+              <div v-if="egGuesses.length" style="margin-top:10px">
+                <div class="mono dim" style="font-size:.68rem;margin-bottom:6px">{{egGuesses.length}} patterns generated</div>
+                <div style="max-height:140px;overflow-y:auto;border:1px solid var(--line);border-radius:var(--r-sm);padding:8px;font-family:var(--mono);font-size:.72rem;line-height:1.8">
+                  <div v-for="e in egGuesses" :key="e" style="color:var(--mut)">{{e}}</div>
+                </div>
+                <button class="btn btn-g btn-sm" style="margin-top:10px;width:100%" @click="emailGuessImport()"><i v-ic="'download'"></i> Import all as leads</button>
+              </div>
+            </div>
           </div>
         </div>
 
