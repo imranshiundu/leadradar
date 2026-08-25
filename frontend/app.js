@@ -713,7 +713,7 @@ const App = {
     </header>
     <div class="notif-mask" v-if="notifOpen" @click="notifOpen=false"></div>
 
-    <main class="page">
+    <main class="page" :key="route">
 
       <template v-if="route==='/'">
         <div class="page-head">
@@ -721,15 +721,15 @@ const App = {
           <button class="btn btn-o btn-sm" @click="pollInbox()"><i v-ic="'refresh-cw'"></i> Sync inbox</button>
         </div>
         <div class="kpis">
-          <button class="kpi clickable" style="--k:var(--blue)" @click="go('/leads')"><div class="kpi-v">{{kpis.total}}</div><div class="kpi-l">Total leads</div></button>
-          <button class="kpi clickable" style="--k:var(--acc)" @click="go('/campaigns')"><div class="kpi-v">{{kpis.sent}}</div><div class="kpi-l">Emails sent</div></button>
-          <button class="kpi clickable" style="--k:var(--amber)" @click="go('/leads')"><div class="kpi-v">{{kpis.approved}}</div><div class="kpi-l">Awaiting send</div></button>
-          <button class="kpi clickable" style="--k:var(--blue)" @click="go('/replies')"><div class="kpi-v">{{kpis.replied}}</div><div class="kpi-l">Replied</div></button>
-          <button class="kpi clickable" style="--k:var(--acc)" @click="go('/replies')"><div class="kpi-v">{{kpis.interested}}</div><div class="kpi-l">Interested</div></button>
-          <button class="kpi clickable" style="--k:var(--red)" @click="go('/leads')"><div class="kpi-v">{{kpis.high}}</div><div class="kpi-l">High priority</div></button>
+          <button class="kpi clickable" style="--k:var(--blue);--i:0" @click="go('/leads')"><div class="kpi-v">{{kpis.total}}</div><div class="kpi-l">Total leads</div></button>
+          <button class="kpi clickable" style="--k:var(--acc);--i:1" @click="go('/campaigns')"><div class="kpi-v">{{kpis.sent}}</div><div class="kpi-l">Emails sent</div></button>
+          <button class="kpi clickable" style="--k:var(--amber);--i:2" @click="go('/leads')"><div class="kpi-v">{{kpis.approved}}</div><div class="kpi-l">Awaiting send</div></button>
+          <button class="kpi clickable" style="--k:var(--blue);--i:3" @click="go('/replies')"><div class="kpi-v">{{kpis.replied}}</div><div class="kpi-l">Replied</div></button>
+          <button class="kpi clickable" style="--k:var(--acc);--i:4" @click="go('/replies')"><div class="kpi-v">{{kpis.interested}}</div><div class="kpi-l">Interested</div></button>
+          <button class="kpi clickable" style="--k:var(--red);--i:5" @click="go('/leads')"><div class="kpi-v">{{kpis.high}}</div><div class="kpi-l">High priority</div></button>
         </div>
         <div class="dash-grid">
-          <div class="panel">
+          <div class="panel" style="animation:fadeUp .45s var(--ease) both;animation-delay:.15s">
             <div class="panel-h"><span class="panel-t">Latest replies</span><a href="#/replies" class="panel-s">all →</a></div>
             <div style="padding:4px 18px 12px">
               <div v-for="r in replies.slice(0,6)" :key="r.id||Math.random()" class="rep-row">
@@ -740,7 +740,7 @@ const App = {
               <div v-if="!replies.length" class="empty" style="padding:22px"><div class="empty-d">No replies yet.</div></div>
             </div>
           </div>
-          <div class="panel">
+          <div class="panel" style="animation:fadeUp .45s var(--ease) both;animation-delay:.25s">
             <div class="panel-h"><span class="panel-t">Campaigns</span><a href="#/campaigns" class="panel-s">manage →</a></div>
             <div style="padding:8px 18px 16px">
               <div v-for="c in campaigns" :key="c.id" style="padding:9px 0;border-bottom:1px solid var(--line)">
@@ -757,7 +757,7 @@ const App = {
         </div>
 
         <div class="dash-grid" style="margin-top:14px">
-          <div class="panel">
+          <div class="panel" style="animation:fadeUp .45s var(--ease) both;animation-delay:.35s">
             <div class="panel-h"><span class="panel-t">Automations</span><a href="#/settings" class="panel-s">configure →</a></div>
             <div style="padding:2px 18px 12px">
               <div class="tog">
@@ -774,7 +774,7 @@ const App = {
               </div>
             </div>
           </div>
-          <div class="panel">
+          <div class="panel" style="animation:fadeUp .45s var(--ease) both;animation-delay:.45s">
             <div class="panel-h"><span class="panel-t">Needs attention</span><span class="panel-s">{{nudges.length}} items</span></div>
             <div style="padding:8px 18px 16px">
               <div v-for="(n,i) in nudges" :key="i" class="nudge">
@@ -1038,11 +1038,11 @@ const App = {
         </div>
 
         <div class="kpis">
-          <div class="kpi" style="--k:var(--blue)"><div class="kpi-v">{{smtpStats.leads_total||0}}</div><div class="kpi-l">Hosts total</div><div class="kpi-sub">target 300</div></div>
-          <div class="kpi" style="--k:var(--acc)"><div class="kpi-v">{{smtpStats.emails_with_address||0}}</div><div class="kpi-l">With email</div></div>
-          <div class="kpi" style="--k:var(--green)"><div class="kpi-v">{{smtpStats.valid||0}}</div><div class="kpi-l">SMTP verified</div></div>
-          <div class="kpi" style="--k:var(--red)"><div class="kpi-v">{{(smtpStats.invalid||0)+(smtpStats.unreachable||0)}}</div><div class="kpi-l">Dead / unreachable</div></div>
-          <div class="kpi" style="--k:var(--amber)"><div class="kpi-v">{{drafts.filter(d=>d.status==='pending').length||0}}</div><div class="kpi-l">Drafts pending</div></div>
+          <div class="kpi" style="--k:var(--blue);--i:0"><div class="kpi-v">{{smtpStats.leads_total||0}}</div><div class="kpi-l">Hosts total</div><div class="kpi-sub">target 300</div></div>
+          <div class="kpi" style="--k:var(--acc);--i:1"><div class="kpi-v">{{smtpStats.emails_with_address||0}}</div><div class="kpi-l">With email</div></div>
+          <div class="kpi" style="--k:var(--green);--i:2"><div class="kpi-v">{{smtpStats.valid||0}}</div><div class="kpi-l">SMTP verified</div></div>
+          <div class="kpi" style="--k:var(--red);--i:3"><div class="kpi-v">{{(smtpStats.invalid||0)+(smtpStats.unreachable||0)}}</div><div class="kpi-l">Dead / unreachable</div></div>
+          <div class="kpi" style="--k:var(--amber);--i:4"><div class="kpi-v">{{drafts.filter(d=>d.status==='pending').length||0}}</div><div class="kpi-l">Drafts pending</div></div>
         </div>
 
         <div class="panel" style="margin-bottom:14px">
@@ -1129,10 +1129,10 @@ const App = {
       <template v-else-if="route==='/analytics'">
         <div class="page-head"><div><div class="page-title">Analytics</div><div class="page-desc">Volume, reply quality, per-campaign breakdown.</div></div></div>
         <div class="kpis">
-          <div class="kpi" style="--k:var(--blue)"><div class="kpi-v">{{analytics.total_leads||0}}</div><div class="kpi-l">Leads</div></div>
-          <div class="kpi" style="--k:var(--acc)"><div class="kpi-v">{{analytics.total_sent||0}}</div><div class="kpi-l">Sent</div></div>
-          <div class="kpi" style="--k:var(--amber)"><div class="kpi-v">{{analytics.total_replies||0}}</div><div class="kpi-l">Replies</div></div>
-          <div class="kpi" style="--k:var(--acc)"><div class="kpi-v">{{analytics.total_interested||0}}</div><div class="kpi-l">Interested</div></div>
+          <div class="kpi" style="--k:var(--blue);--i:0"><div class="kpi-v">{{analytics.total_leads||0}}</div><div class="kpi-l">Leads</div></div>
+          <div class="kpi" style="--k:var(--acc);--i:1"><div class="kpi-v">{{analytics.total_sent||0}}</div><div class="kpi-l">Sent</div></div>
+          <div class="kpi" style="--k:var(--amber);--i:2"><div class="kpi-v">{{analytics.total_replies||0}}</div><div class="kpi-l">Replies</div></div>
+          <div class="kpi" style="--k:var(--acc);--i:3"><div class="kpi-v">{{analytics.total_interested||0}}</div><div class="kpi-l">Interested</div></div>
         </div>
         <div class="panel" style="margin-bottom:14px">
           <div class="panel-h"><span class="panel-t">Sends · last 14 days</span></div>
