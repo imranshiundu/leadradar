@@ -1216,6 +1216,12 @@ CREATE TABLE IF NOT EXISTS contact_history (
             "UPDATE leads SET status='rejected', tags=COALESCE(tags,'')||',non_host' WHERE id=?",
             (lead_id,))
 
+    async def list_optouts(self) -> list[dict]:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute('SELECT email FROM opt_outs')
+            return [dict(r) for r in await cur.fetchall()]
+
     async def count_by_status(self) -> dict:
         async with self.connect() as db:
             db.row_factory = aiosqlite.Row

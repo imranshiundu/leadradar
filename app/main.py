@@ -459,6 +459,59 @@ async def api_purge_non_hosts():
     return {'ok': True, 'purged': purged, 'remaining_by_status': counts}
 
 
+@app.post('/api/leads/import-emails')
+async def api_import_emails(request: Request):
+    """Bulk-import discovered hosts. Server-side dedupe + relevance gate."""
+    body = await request.json()
+    items = body.get('items') or []
+    if not items:
+        raise HTTPException(400, 'items required')
+
+    from app.models import LeadCreate
+    from app.relevance import relevance_score
+    from app.safety import fingerprint as make_fp
+
+    rows = [dict(r) for r in await db.list_leads(limit=10000)]
+    existing = {(r.get('email') or '').lower() for r in rows}
+    opted = set()
+    for row in await db.list_optouts():
+        opted.add(row['email'].lower())
+
+    added, dupes, gated, inserted_ids = 0, 0, 0, []
+    for item in items[:500]:
+        e = (item.get('email') or '').strip().lower()
+        if not e or '@' not in e:
+            continue
+        if e in existing or e in opted:
+            dupes += 1
+            continue
+        name = (item.get('name') or e.split('@')[0].replace('.', ' ').replace('_', ' ')).strip()[:80]
+        source_url = (item.get('source') or 'local_discovery')[:120]
+        score = relevance_score(e, name, '', '', '')
+        if score < 3:
+            gated += 1
+            continue
+        existing.add(e)
+        lead = LeadCreate(source='web_discovery', source_url=source_url, name=name.title(),
+                          email=e, opportunity_type='event_organizer',
+                          raw_text=f'local crawler: {source_url}',
+                          fingerprint=make_fp(e))
+        try:
+            new_id, created = await db.insert_lead(lead)
+        except Exception:  # noqa: BLE001
+            dupes += 1
+            continue
+        if created:
+            added += 1
+            inserted_ids.append(new_id)
+            prio = 'high' if score >= 6 else ('medium' if score >= 4 else 'low')
+            await db.execute_raw('UPDATE leads SET need_score=?, priority=?, relevance=? WHERE id=?',
+                                 (min(100, score * 12), prio, score, new_id))
+
+    return {'ok': True, 'added': added, 'duplicates': dupes,
+            'gated_low_relevance': gated, 'leads_total': await db.count_leads()}
+
+
 @app.get('/api/outreach/bcc-report')
 async def api_bcc_report():
     """Who received past BCC blasts, with their relevance classification now."""
