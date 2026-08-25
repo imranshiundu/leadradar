@@ -99,6 +99,8 @@ const App = {
       discovery: {},
       smtpStats: {},
       bccResult: null,
+      bccPreview: null,
+      harvestText: '',
       _discoTimer: null,
       _inboxSynced: false,
     };
@@ -391,6 +393,19 @@ const App = {
       this.toast('Draft discarded');
       await this.loadDrafts();
     },
+    async harvestPaste() {
+      if (!this.harvestText || !this.harvestText.trim()) return this.toast('Paste emails or page text first', true);
+      try {
+        const r = await POSTJ('/api/discovery/harvest', { text: this.harvestText, url: 'manual-paste' });
+        this.toast('Harvested ' + r.added + ' new hosts from paste');
+        this.harvestText = '';
+        await this.refreshOutboxStats();
+      } catch (e) { this.toast(e.message, true); }
+    },
+    bookmarklet() {
+      const code = "javascript:(function(){fetch('" + CFG.api + "/api/discovery/harvest',{method:'POST',headers:{'Content-Type':'application/json','X-Session-Token':'" + CFG.sess + "'},body:JSON.stringify({text:document.body.innerText.slice(0,60000),url:location.href})}).then(function(r){return r.json()}).then(function(d){alert('LeadRadar: harvested '+d.added+' new hosts ('+d.leads_total+' total)')}).catch(function(e){alert('LeadRadar harvest failed: '+e)})})()";
+      return code;
+    },
     async refreshOutboxStats() {
       try {
         const s = await GET('/api/verify-smtp-stats');
@@ -433,16 +448,44 @@ const App = {
       this.refreshOutboxStats();
       this.toast('Deep verification complete');
     },
-    async buildBcc() {
+    async buildBcc(confirm) {
       if (this._bccBusy) return;
       this._bccBusy = true;
-      this.bccResult = null;
+      if (!confirm) { this.bccPreview = null; this.bccResult = null; }
       try {
-        const r = await POSTJ('/api/outreach/bcc-draft', { to: 'taptapafrica@gmail.com', require_smtp_valid: true, max_hosts: 450 });
-        this.bccResult = r;
-        this.toast(r.message);
+        const r = await POSTJ('/api/outreach/bcc-draft', { to: 'taptapafrica@gmail.com', require_smtp_valid: true, max_hosts: 450, confirm: !!confirm });
+        if (r.preview) { this.bccPreview = r; this.toast(r.eligible + ' verified hosts pass the relevance bar — review below'); }
+        else {
+          this.bccResult = r;
+          this.bccPreview = null;
+          this.toast(r.message);
+        }
       } catch (e) { this.toast(e.message, true); }
       this._bccBusy = false;
+    },
+    async rescoreLeads() {
+      if (this._rescoring) return;
+      this._rescoring = true;
+      try {
+        const r = await POSTJ('/api/leads/rescore', {});
+        this.toast('Rescored ' + r.rescored + ' leads — ' + r.confident_hosts + ' confident hosts');
+        await this.refreshOutboxStats();
+      } catch (e) { this.toast(e.message, true); }
+      this._rescoring = false;
+    },
+    async purgeNonHosts() {
+      if (!window.confirm('Mark all non-hosts as rejected? Sent contacts are kept.')) return;
+      try {
+        const r = await POSTJ('/api/leads/purge-non-hosts', {});
+        this.toast('Purged ' + r.purged + ' non-hosts — ' + (r.remaining_by_status.new || 0) + ' active leads left');
+        await this.refreshOutboxStats();
+      } catch (e) { this.toast(e.message, true); }
+    },
+    async loadBccReport() {
+      try {
+        const r = await GET('/api/outreach/bcc-report');
+        this.blastReport = r;
+      } catch (e) {}
     },
     openLeadById(id) {
       const l = this.leads.find(x => x.id === id);
@@ -1010,13 +1053,40 @@ const App = {
           <div style="padding:16px 18px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
             <button class="btn btn-g btn-sm" @click="findHosts()" :disabled="discovery.running"><i v-ic="'radar'"></i> {{discovery.running?'Discovering…':'Find more hosts → 300'}}</button>
             <button class="btn btn-o btn-sm" @click="deepVerify()" :disabled="_verifyingAll"><i v-ic="'shield-check'"></i> {{_verifyingAll?'Probing mailboxes…':'Deep-verify (SMTP probe)'}}</button>
-            <button class="btn btn-p btn-sm" @click="buildBcc()" :disabled="_bccBusy"><i v-ic="'send'"></i> {{_bccBusy?'Drafting…':'Build BCC draft → taptapafrica@gmail.com'}}</button>
-            <span v-if="(discovery.running||discovery.phase)&&!discovery.done" class="mono dim" style="font-size:.7rem">{{discovery.phase}} — {{discovery.scanned||0}} scanned, {{discovery.found||0}} new hosts</span>
+            <button class="btn btn-o btn-sm" @click="rescoreLeads()" :disabled="_rescoring"><i v-ic="'filter'"></i> Rescore relevance</button>
+            <button class="btn btn-d btn-sm" @click="purgeNonHosts()"><i v-ic="'trash-2'"></i> Purge non-hosts</button>
+            <button class="btn btn-p btn-sm" @click="buildBcc(false)" :disabled="_bccBusy"><i v-ic="'send'"></i> Preview BCC blast</button>
+          </div>
+          <div v-if="bccPreview" style="margin:0 18px 16px;padding:12px 14px;border:1px solid var(--amber);background:var(--amber-soft);border-radius:var(--r-sm)">
+            <strong style="font-size:.85rem">Preview — {{bccPreview.eligible}} hosts would be BCC'd</strong>
+            <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;font-size:.72rem;color:var(--mut)">
+              <span>not relevant: {{bccPreview.not_relevant}}</span><span>smtp failed: {{bccPreview.smtp_failed}}</span>
+              <span>cooldown/pending: {{bccPreview.cooldown_or_pending}}</span><span>opted out/rejected: {{bccPreview.opted_out}}</span><span>no email: {{bccPreview.no_email}}</span>
+            </div>
+            <div style="margin-top:8px;max-height:140px;overflow-y:auto">
+              <div v-for="s in bccPreview.sample" :key="s.email" class="mono dim" style="font-size:.68rem">{{s.email}} <span :style="{color:s.relevance>=7?'var(--acc)':'var(--amber)'}">r{{s.relevance}}</span></div>
+            </div>
+            <div class="hint">Only addresses scoring ≥5 on event-host signals (keywords, .co.ke, real events) and confirmed live by SMTP get in.</div>
+            <div style="display:flex;gap:8px;margin-top:10px">
+              <button class="btn btn-p btn-sm" @click="buildBcc(true)" :disabled="_bccBusy||!bccPreview.eligible">{{_bccBusy?'Drafting…':'Confirm — create draft'}}</button>
+              <button class="btn btn-o btn-sm" @click="bccPreview=null">Cancel</button>
+            </div>
           </div>
           <div v-if="bccResult" style="margin:0 18px 16px;padding:12px 14px;border:1px solid var(--acc-line);background:var(--acc-soft);border-radius:var(--r-sm);font-size:.82rem">
             <strong>{{bccResult.message}}</strong>
             <div class="dim mono" style="font-size:.68rem;margin-top:4px">To {{bccResult.to}} · eligible {{bccResult.eligible}} · chunks: <span v-for="c in bccResult.chunks" :key="c.chunk">[{{c.bcc_count}} BCC]</span></div>
             <div class="hint" style="color:var(--text2)">Open Gmail → Drafts → review → hit send when happy. Gmail caps ~500 recipients per message; chunks stay under it.</div>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-bottom:14px">
+          <div class="panel-h"><span class="panel-t">Browser harvester</span><span class="panel-s">your IP · any site · one click</span></div>
+          <div style="padding:16px 18px">
+            <p class="mut" style="font-size:.8rem;margin-bottom:10px">Drag this button to your bookmarks bar. Open Eventbrite Kenya, directory pages, WhatsApp Web — anywhere organizers hang out — and click it. Every organizer email on the page lands in Leads instantly.</p>
+            <a :href="bookmarklet()" onclick="return false" style="display:inline-flex;align-items:center;gap:8px;padding:8px 16px;background:var(--acc);color:#06281c;border-radius:8px;font-weight:800;font-size:.82rem;cursor:grab"><i v-ic="'download'"></i> Harvest hosts →</a>
+            <label class="fl">Or paste emails / page text</label>
+            <textarea v-model="harvestText" rows="4" placeholder="info@planner.co.ke, hello@events.co.ke… or Ctrl+A Ctrl+C a whole directory page and paste it here"></textarea>
+            <button class="btn btn-g btn-sm" style="margin-top:8px" @click="harvestPaste()">Harvest pasted content</button>
           </div>
         </div>
 

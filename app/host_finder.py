@@ -29,14 +29,16 @@ _KE_TLD = re.compile(r'\.co\.ke$|\.or\.ke$|\.ne\.ke$', re.I)
 _ROLE_OK = re.compile(r'^(info|hello|hi|contact|bookings?|events?|team|admin|office|sales|support|careers?)@', re.I)
 
 _DDGS = [
-    '"event organizers" in nairobi "@gmail.com"',
-    'event planners kenya contact "info@"',
-    '"event planning" company kenya "@gmail.com" OR "@co.ke"',
-    'kenya events company bookings email "@co.ke"',
-    'nairobi party & events organisers contact us',
-    'kenya wedding planners email contact',
-    'mombasa event organizers contact email',
-    'corporate events kenya "bookings@" OR "events@"',
+    '"event planners" nairobi "info@" contact',
+    'kenya event organisers directory contacts',
+    '"events company" nairobi bookings email .co.ke',
+    'wedding planners kenya "email us"',
+    'corporate events nairobi "bookings@" OR "events@"',
+    'mombasa kisumu nakuru event organizers contact',
+    'kenya party decorators sound hire events email',
+    'eventbrite nairobi organizer',
+    'kenya concerts festivals organizers contacts',
+    'team building companies kenya contact email',
 ]
 
 state = {'running': False, 'phase': '', 'found': 0, 'scanned': 0, 'target': 0,
@@ -110,51 +112,85 @@ async def mine_gmail(db: Database, existing: set[str], max_headers: int = 1500) 
                 pass
         return pairs
 
+    from app.relevance import relevance_score
     rows = await loop.run_in_executor(None, work)
-    added = await insert_hosts(db, existing, [(e, f'gmail:{f}') for e, f in rows])
+    gated = [(e, src) for e, src in ((e, f'gmail:{f}') for e, f in rows)
+             if relevance_score(e) >= 4]
+    added = await insert_hosts(db, existing, gated)
     state['scanned'] += len(rows)
     return added
 
 
-async def web_find(db: Database, existing: set[str], per_query_pages: int = 8,
-                   overall_budget_s: int = 240) -> int:
-    """DuckDuckGo HTML search -> fetch pages -> harvest emails near org keywords."""
+async def _collect_links(cx: httpx.AsyncClient, q: str) -> list[str]:
+    """Multi-engine search: Bing, Mojeek, DDG-lite. Returns deduped external URLs."""
+    urls: list[str] = []
+    headers = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0',
+               'Accept-Language': 'en-US,en;q=0.9'}
+    try:
+        r = await cx.get('https://www.bing.com/search', params={'q': q, 'count': 20}, headers=headers)
+        for m in re.findall(r'<h2[^>]*><a[^>]+href="(https?://[^"]+)"', r.text):
+            if 'bing.com' not in m and 'microsoft' not in m:
+                urls.append(m.split('&')[0] if 'bing.com/ck/' not in m else m)
+        # Bing redirect wrappers
+        for m in re.findall(r'href="(https://www\.bing\.com/ck/a?!.*?)["<]', r.text):
+            inner = re.search(r'u=a1(https?%3a%2f%2f[^&]+)', m)
+            if inner:
+                from urllib.parse import unquote
+                urls.append(unquote(inner.group(1)))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        r = await cx.get('https://www.mojeek.com/search', params={'q': q}, headers=headers)
+        urls += [u for u in re.findall(r'<a class="ob" href="(https?://[^"]+)"', r.text)]
+        urls += [u for u in re.findall(r'href="(https?://[^"]+)" class="title"', r.text)]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        r = await cx.get('https://lite.duckduckgo.com/lite/', params={'q': q}, headers=headers)
+        urls += [u for u in re.findall(r'href="(https?://[^"]+)"', r.text)
+                 if 'duckduckgo' not in u]
+    except Exception:  # noqa: BLE001
+        pass
+    seen, out = set(), []
+    for u in urls:
+        clean = u.rstrip('/')
+        if clean.startswith('http') and clean not in seen and \
+                not re.search(r'(google|bing|mojeek|duckduckgo|youtube|facebook|instagram|twitter|x)\.', clean):
+            seen.add(clean)
+            out.append(clean)
+    return out
+
+
+async def web_find(db: Database, existing: set[str], per_query_pages: int = 10,
+                   overall_budget_s: int = 300) -> int:
+    """Search-engine harvest -> fetch pages -> emails near org keywords."""
     started = time.monotonic()
     added_total = 0
-    headers = {'User-Agent': get_settings().user_agent}
-    async with httpx.AsyncClient(headers=headers, timeout=15, follow_redirects=True) as cx:
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as cx:
         for q in _DDGS:
             if state['found'] >= state['target'] or time.monotonic() - started > overall_budget_s:
                 break
             state['phase'] = f'web: {q[:38]}'
-            try:
-                r = await cx.get('https://html.duckduckgo.com/html/', params={'q': q})
-                links = re.findall(r'href="(https?://[^"]+)"[^>]*class="result__a"', r.text)
-                if not links:
-                    links = re.findall(r'result__url"[^>]*>\s*(https?://\S+)', r.text)
-                seen_links = []
-                for u in links:
-                    clean = u.split('uddg=')[-1]
-                    if clean.startswith('http') and clean not in seen_links:
-                        seen_links.append(clean.split('&rut=')[0])
-                for url in seen_links[:per_query_pages]:
-                    if state['found'] >= state['target']:
-                        break
-                    try:
-                        pr = await cx.get(url)
-                        body = pr.text
-                        emails = extract_emails(re.sub(r'<[^>]+>', ' ', body))
-                        ctx = body[:4000]
-                        pairs = []
-                        for e in emails:
-                            sc, _ = score_email(e, ctx + ' ' + str(_DDGS))
-                            if sc >= 2:
-                                pairs.append((e, f'web:{url[:60]}'))
-                        added_total += await insert_hosts(db, existing, pairs)
-                    except Exception:  # noqa: BLE001
+            links = await _collect_links(cx, q)
+            for url in links[:per_query_pages]:
+                if state['found'] >= state['target']:
+                    break
+                try:
+                    pr = await cx.get(url)
+                    if pr.status_code != 200 or 'text/html' not in pr.headers.get('content-type', 'html'):
                         continue
-            except Exception:  # noqa: BLE001
-                continue
+                    body = pr.text
+                    emails = extract_emails(re.sub(r'<[^>]+>', ' ', body))
+                    ctx = body[:4000] + ' ' + url
+                    pairs = []
+                    for e in emails:
+                        sc, _ = score_email(e, ctx)
+                        if sc >= 3:
+                            pairs.append((e, f'web:{url[:60]}'))
+                    added_total += await insert_hosts(db, existing, pairs)
+                except Exception:  # noqa: BLE001
+                    continue
+            await asyncio.sleep(2)
     return added_total
 
 
@@ -202,8 +238,8 @@ async def run(db: Database, target: int = 300) -> None:
 
     rows = await db.list_leads(limit=10000)
     existing = {(dict(r).get('email') or '').lower() for r in rows}
-    current_leads = len(rows)
-    state['target'] = max(target - current_leads, 0)
+    active_leads = sum(1 for r in rows if dict(r).get('status') != 'rejected')
+    state['target'] = max(target - active_leads, 0)
     if state['target'] == 0:
         state.update(phase='already at target', running=False, done=True)
         return
@@ -215,6 +251,9 @@ async def run(db: Database, target: int = 300) -> None:
         if state['found'] < state['target']:
             n = await web_find(db, existing)
             state['sources']['web'] = n
+        if state['found'] < state['target']:
+            n = await crawl_eventbrite(db, existing)
+            state['sources']['eventbrite'] = n
         state['phase'] = 'done'
     except Exception as exc:  # noqa: BLE001
         state['phase'] = f'error: {exc}'
@@ -223,3 +262,90 @@ async def run(db: Database, target: int = 300) -> None:
         state['leads_total'] = total
         state['running'] = False
         state['done'] = True
+
+
+async def crawl_eventbrite(db: Database, existing: set[str], max_pages: int = 8,
+                           max_events: int = 120) -> int:
+    """Crawl Eventbrite Kenya listings -> event pages -> organizer emails."""
+    added = 0
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True,
+                                 headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0'}) as cx:
+        event_urls = []
+        for city in ('kenya--nairobi', 'kenya--mombasa', 'kenya--kisumu'):
+            for page in range(1, max_pages + 1):
+                if len(event_urls) >= max_events or state['found'] >= state['target']:
+                    break
+                try:
+                    r = await cx.get(f'https://www.eventbrite.com/d/{city}/events/',
+                                     params={'page': page})
+                    if r.status_code != 200:
+                        break
+                    found_links = re.findall(r'href="(https://www\.eventbrite\.com/e/[^"#?]+)', r.text)
+                    for u in found_links:
+                        if u not in event_urls:
+                            event_urls.append(u)
+                except Exception:  # noqa: BLE001
+                    continue
+        state['phase'] = f'eventbrite: {len(event_urls)} events'
+        for url in event_urls[:max_events]:
+            if state['found'] >= state['target']:
+                break
+            try:
+                pr = await cx.get(url)
+                if pr.status_code != 200:
+                    continue
+                body = pr.text
+                # Event name for context
+                title_m = re.search(r'<title>([^<]+)</title>', body)
+                title = title_m.group(1) if title_m else ''
+                emails = extract_emails(re.sub(r'<[^>]+>', ' ', body))
+                pairs = []
+                for e in emails:
+                    sc, _ = score_email(e, title + ' event organizer tickets ' + url)
+                    if sc >= 3:
+                        pairs.append((e, f'eventbrite:{url.rsplit("/",2)[-2][:50]}'))
+                before = state['found']
+                added += await insert_hosts(db, existing, pairs)
+                _ = before
+                await asyncio.sleep(0.5)
+            except Exception:  # noqa: BLE001
+                continue
+    return added
+
+
+async def harvest_urls(db: Database, urls: list[str]) -> dict:
+    """Extract organizer emails from arbitrary user-supplied pages."""
+    existing = {(dict(r).get('email') or '').lower() for r in await db.list_leads(limit=10000)}
+    state.update(target=9999)
+    added, scanned = 0, 0
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True,
+                                 headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0'}) as cx:
+        for url in urls:
+            if not url.startswith('http'):
+                url = 'https://' + url
+            try:
+                pr = await cx.get(url)
+                body = re.sub(r'<[^>]+>', ' ', pr.text)
+                pairs = []
+                for e in extract_emails(body):
+                    sc, _ = score_email(e, body[:4000] + ' ' + url)
+                    if sc >= 3:
+                        pairs.append((e, f'harvest:{url[:60]}'))
+                added += await insert_hosts(db, existing, pairs)
+                scanned += 1
+            except Exception:  # noqa: BLE001
+                continue
+    return {'scanned': scanned, 'added': added}
+
+
+async def harvest_text(db: Database, existing: set[str], text: str,
+                       source_url: str = 'paste') -> dict:
+    """Score+insert organizer emails found in raw page text (bookmarklet/paste)."""
+    clean = re.sub(r'\s+', ' ', text)
+    pairs = []
+    for e in extract_emails(clean):
+        sc, _ = score_email(e, clean[:3000] + ' ' + source_url)
+        if sc >= 3:
+            pairs.append((e, f'harvest:{source_url}'))
+    added = await insert_hosts(db, existing, pairs)
+    return {'added': added, 'pages': 1}

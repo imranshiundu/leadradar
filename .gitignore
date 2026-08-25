@@ -10,3 +10,5 @@ build/
 .venv/
 venv/
 *.log
+.vercel
+.env*.local

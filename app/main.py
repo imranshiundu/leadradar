@@ -390,6 +390,38 @@ async def api_find_hosts(request: Request):
     return {'ok': True, **host_finder.status()}
 
 
+@app.post('/api/discovery/harvest')
+async def api_discovery_harvest(request: Request):
+    """Extract organizer emails from pasted text/HTML or crawled URLs.
+
+    Powers both the paste box and the bookmarklet (which sends document text
+    from the admin's own browser — bypasses datacenter-IP blocks entirely).
+    """
+    body = await request.json()
+    text = body.get('text') or ''
+    urls = [u for u in (body.get('urls') or []) if isinstance(u, str) and len(u) > 6][:20]
+    source_url = (body.get('url') or 'paste')[:80]
+
+    if not text and not urls:
+        raise HTTPException(400, 'Provide text or urls')
+
+    added = scanned = 0
+    existing = {(dict(r).get('email') or '').lower() for r in await db.list_leads(limit=10000)}
+
+    if text:
+        result = await host_finder.harvest_text(db, existing, text, source_url)
+        added += result['added']
+        scanned += result['pages']
+
+    if urls:
+        result = await host_finder.harvest_urls(db, urls)
+        added += result['added']
+        scanned += result['scanned']
+
+    return {'ok': True, 'added': added, 'scanned': scanned,
+            'leads_total': await db.count_leads()}
+
+
 @app.get('/api/discovery/status')
 async def api_discovery_status():
     return {'ok': True, **host_finder.status()}
@@ -399,42 +431,112 @@ def _chunk_bcc(emails: list[str], cap: int = _BCC_RECIPIENT_CAP) -> list[list[st
     return [emails[i:i + cap] for i in range(0, len(emails), cap)]
 
 
+@app.post('/api/leads/rescore')
+async def api_leads_rescore():
+    """Recompute host-relevance for every lead. >=5 = confident host."""
+    from app.relevance import relevance_score
+    rows = [dict(r) for r in await db.list_leads(limit=10000)]
+    dist = {0: 0}
+    for r in rows:
+        score = relevance_score(r.get('email'), r.get('name'), r.get('raw_text'),
+                                r.get('website_url'), r.get('event_name'))
+        await db.set_relevance(int(r['id']), score)
+        dist[score] = dist.get(score, 0) + 1
+    hosts = sum(n for s, n in dist.items() if s >= 5)
+    return {'ok': True, 'rescored': len(rows), 'confident_hosts': hosts, 'distribution': dist}
+
+
+@app.post('/api/leads/purge-non-hosts')
+async def api_purge_non_hosts():
+    """Mark everything below relevance 5 as rejected/non-host (kept for audit)."""
+    rows = [dict(r) for r in await db.list_leads(limit=10000)]
+    purged = 0
+    for r in rows:
+        if (r.get('relevance') or 0) < 5 and r.get('status') not in ('sent',):
+            await db.mark_irrelevant(int(r['id']))
+            purged += 1
+    counts = await db.count_by_status()
+    return {'ok': True, 'purged': purged, 'remaining_by_status': counts}
+
+
+@app.get('/api/outreach/bcc-report')
+async def api_bcc_report():
+    """Who received past BCC blasts, with their relevance classification now."""
+    recipients = await db.recent_bcc_recipients()
+    from app.relevance import relevance_score
+    for r in recipients:
+        r['relevance_now'] = relevance_score(r.get('email'), r.get('name'), '', '', '')
+    non_hosts = [r for r in recipients if (r['relevance_now'] or 0) < 5]
+    return {'ok': True, 'total_recipients': len(recipients),
+            'non_hosts': len(non_hosts),
+            'recipients': recipients[:500]}
+
+
 @app.post('/api/outreach/bcc-draft')
 async def api_bcc_draft(request: Request):
-    """One email to taptapafrica@gmail.com with verified hosts on BCC, saved as Gmail draft(s)."""
+    """Build ONE Gmail draft: To taptapafrica@gmail.com, BCC verified event hosts.
+
+    Two-step by design: call with confirm=false (default) for a preview of exactly
+    who would receive it; only confirm=true writes a draft.
+    """
     body = await request.json() if await request.body() else {}
     to_addr = (body.get('to') or 'taptapafrica@gmail.com').strip()
     subject = (body.get('subject') or '').strip()
     text = body.get('body') or ''
     require_smtp_valid = bool(body.get('require_smtp_valid', True))
+    confirm = bool(body.get('confirm', False))
     max_hosts = min(int(body.get('max_hosts') or 450), _BCC_RECIPIENT_CAP)
 
+    from app.relevance import is_blast_eligible, relevance_score
+
     rows = [dict(r) for r in await db.list_leads(limit=10000)]
-    chosen: list[str] = []
+    eligible: list[dict] = []
+    stats = {'no_email': 0, 'opted_out': 0, 'cooldown_or_pending': 0,
+             'smtp_failed': 0, 'not_relevant': 0}
     for lead in rows:
         e = (lead.get('email') or '').strip()
         if not e:
+            stats['no_email'] += 1
             continue
-        if lead.get('status') == 'opted_out' or await db.is_opted_out(e):
+        if lead.get('status') == 'opted_out' or lead.get('status') == 'rejected' \
+                or await db.is_opted_out(e):
+            stats['opted_out'] += 1
             continue
         if await db.has_pending_draft_for(e) or await db.was_recently_contacted(e, settings.contact_cooldown_days):
+            stats['cooldown_or_pending'] += 1
             continue
         smtp_res = await db.get_smtp_result(e)
+        if smtp_res and smtp_res['status'] == 'invalid':
+            stats['smtp_failed'] += 1
+            continue
         if require_smtp_valid:
             if not smtp_res:
+                stats['smtp_failed'] += 1
                 continue
             if smtp_res['status'] != 'valid':
+                stats['smtp_failed'] += 1
                 continue
-        elif smtp_res and smtp_res['status'] == 'invalid':
+        score = lead.get('relevance')
+        if score is None:
+            score = relevance_score(e, lead.get('name'), lead.get('raw_text'),
+                                    lead.get('website_url'), lead.get('event_name'))
+        if not is_blast_eligible(score):
+            stats['not_relevant'] += 1
             continue
-        chosen.append(e)
-        if len(chosen) >= max_hosts * 8:  # hard scan stop; chunks below trim
-            break
+        lead['relevance'] = score
+        eligible.append(lead)
 
-    if not chosen:
-        raise HTTPException(400, 'No eligible hosts. Run discovery and SMTP deep-verify first.')
+    preview = {
+        'eligible': len(eligible), **stats,
+        'sample': [{'email': l['email'], 'name': l['name'],
+                    'relevance': l['relevance']} for l in eligible[:20]],
+    }
+    if not confirm:
+        return {'ok': True, 'preview': True, **preview}
 
-    # Default copy from the Taptap campaign when caller did not supply one.
+    if not eligible:
+        raise HTTPException(400, 'No eligible hosts after relevance filtering.')
+
     if not subject or not text:
         camps = await db.list_campaigns()
         subj_tpl = (dict(camps[0])['subject_template'] if camps else 'Taptap — event ticketing & payments')
@@ -442,7 +544,8 @@ async def api_bcc_draft(request: Request):
         subject = re.sub(r'\{\{\s*\w+\s*\}\}', '', subj_tpl).strip()[:180] if not subject else subject
         text = re.sub(r'\{\{\s*\w+\s*\}\}', 'there', body_tpl) if not text else text
 
-    chunks = _chunk_bcc(chosen)
+    emails = [l['email'] for l in eligible][:max_hosts]
+    chunks = _chunk_bcc(emails)
     results = []
     for i, chunk in enumerate(chunks, 1):
         subj = subject + (f' ({i}/{len(chunks)})' if len(chunks) > 1 else '')
@@ -457,11 +560,10 @@ async def api_bcc_draft(request: Request):
             await db.touch_contact(e, 'draft')
 
     await db.add_event('outreach:bcc_draft', {
-        'to': to_addr, 'chunks': len(results),
-        'total_bcc': sum(r['bcc_count'] for r in results)})
-    return {'ok': True, 'to': to_addr, 'eligible': len(chosen),
+        'to': to_addr, 'chunks': len(results), 'total_bcc': sum(r['bcc_count'] for r in results)})
+    return {'ok': True, 'to': to_addr, 'eligible': len(eligible), **stats,
             'chunks': results, 'message':
-            f'{len(results)} Gmail draft(s) created — {sum(r["bcc_count"] for r in results)} hosts BCC\'d.'}
+            f'{len(results)} Gmail draft(s) created — {sum(r["bcc_count"] for r in results)} verified hosts BCC\'d.'}
 
 
 @app.post('/api/verify-smtp-batch')

@@ -317,6 +317,7 @@ CREATE TABLE IF NOT EXISTS contact_history (
             'event_date': 'TEXT',
             'priority': 'TEXT',
             'tags': 'TEXT',
+            'relevance': 'INTEGER',
         }
         for col, decl in additions.items():
             if col not in existing_cols:
@@ -1205,4 +1206,29 @@ CREATE TABLE IF NOT EXISTS contact_history (
         async with self.connect() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute('SELECT email FROM smtp_checks')
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def set_relevance(self, lead_id: int, score: int) -> None:
+        await self.execute_raw('UPDATE leads SET relevance=? WHERE id=?', (score, lead_id))
+
+    async def mark_irrelevant(self, lead_id: int) -> None:
+        await self.execute_raw(
+            "UPDATE leads SET status='rejected', tags=COALESCE(tags,'')||',non_host' WHERE id=?",
+            (lead_id,))
+
+    async def count_by_status(self) -> dict:
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute('SELECT status, COUNT(*) AS n FROM leads GROUP BY status')
+            return {r['status']: r['n'] for r in await cur.fetchall()}
+
+    async def recent_bcc_recipients(self) -> list[dict]:
+        """Emails touched as part of bcc_blast drafts — i.e. who received the last blast."""
+        async with self.connect() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                '''SELECT l.id, l.name, l.email, l.relevance, l.priority, h.last_at
+                   FROM contact_history h JOIN leads l ON lower(l.email)=h.email
+                   WHERE h.last_channel='draft'
+                   ORDER BY h.last_at DESC LIMIT 1000''')
             return [dict(r) for r in await cur.fetchall()]
