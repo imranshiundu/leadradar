@@ -5,8 +5,8 @@ Usage:
   python3 scripts/discover_local.py --api http://169.58.128.213/lr \
       --email you@gmail.com --password '...' [--target 300]
 
-Sources: DuckDuckGo HTML search (works off-datacenter), Eventbrite Kenya listings
--> event pages. Every candidate is relevance-scored server-side before storing.
+Sources: Bing search (base64 decode), Eventbrite Kenya, BrighterMonday jobs,
+crt.name CT subdomain discovery. Every candidate is relevance-scored server-side.
 """
 from __future__ import annotations
 
@@ -34,6 +34,18 @@ QUERIES = [
     'site:businesslist.co.ke event planners',
     'kenya events companies @gmail.com',
     'nairobi mc entertainment events contacts',
+]
+
+CRT_DOMAINS = [
+    'eventbrite.co.ke', 'eventbrite.com',
+    'taptap.africa',
+    'brightermonday.co.ke',
+    'businesslist.co.ke',
+    'nairobifunctionhalls.com',
+    'eventpark.co.ke',
+    'ticketbox.co.ke',
+    'mkeja.co.ke',
+    'kenyabuzz.com',
 ]
 
 
@@ -235,6 +247,37 @@ def main() -> None:
                 time.sleep(0.3)
         except Exception as ex:  # noqa: BLE001
             print('  bm skipped:', str(ex)[:60])
+
+        # Phase D: crt.name CT subdomain discovery
+        crt_subdomains: list[str] = []
+        for apex in CRT_DOMAINS:
+            try:
+                r = cx.get('https://crt.name/v1/search', params={'apex': apex}, timeout=12)
+                if r.status_code == 200:
+                    for line in r.text.strip().splitlines():
+                        sub = line.strip().lower()
+                        if sub and sub != apex and '*' not in sub and sub not in crt_subdomains:
+                            crt_subdomains.append(sub)
+            except Exception:  # noqa: BLE001
+                continue
+            time.sleep(0.2)
+        print(f'[crt.name] {len(crt_subdomains)} subdomains from {len(CRT_DOMAINS)} domains')
+        for si, sub in enumerate(crt_subdomains[:200]):
+            if len(candidates) >= max(needed * 6, 200):
+                break
+            for scheme in ('https', 'http'):
+                try:
+                    pr = cx.get(f'{scheme}://{sub}', timeout=10)
+                    if pr.status_code < 400:
+                        body = re.sub(r'<[^>]+>', ' ', pr.text)
+                        for e in extract_emails(body):
+                            candidates.setdefault(e, {'email': e, 'name': '', 'source': f'crt.name:{sub[:60]}'})
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+            if si % 40 == 0 and si:
+                print(f'  crt.name crawled {si}/{min(len(crt_subdomains), 200)} — candidates: {len(candidates)}')
+            time.sleep(0.25)
 
     items = list(candidates.values())
     print(f'collected {len(items)} candidate emails; pushing...')

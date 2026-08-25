@@ -1,8 +1,9 @@
 """Find Taptap hosts (event organizers) at scale.
 
-Two sources, both funneled through the same dedupe gate:
+Three sources, all funneled through the same dedupe gate:
 1. Gmail mining — scan INBOX + Sent headers for organizer-looking addresses.
 2. Web discovery — DuckDuckGo HTML search + page crawl with keyword scoring.
+3. CT subdomain discovery — crt.name Certificate Transparency index for target domains.
 
 Nothing here sends email; it only creates leads for the Outbox flow.
 """
@@ -249,6 +250,9 @@ async def run(db: Database, target: int = 300) -> None:
         n = await mine_gmail(db, existing)
         state['sources']['gmail'] = n
         if state['found'] < state['target']:
+            n = await crt_discover(db, existing)
+            state['sources']['crt_name'] = n
+        if state['found'] < state['target']:
             n = await web_find(db, existing)
             state['sources']['web'] = n
         if state['found'] < state['target']:
@@ -349,3 +353,113 @@ async def harvest_text(db: Database, existing: set[str], text: str,
             pairs.append((e, f'harvest:{source_url}'))
     added = await insert_hosts(db, existing, pairs)
     return {'added': added, 'pages': 1}
+
+
+# ── crt.name Certificate Transparency discovery ──────────────────────
+
+CRT_TARGET_DOMAINS = [
+    'eventbrite.co.ke', 'eventbrite.com',
+    'taptap.africa',
+    'brightermonday.co.ke',
+    'businesslist.co.ke',
+    'nairobifunctionhalls.com',
+    'eventpark.co.ke',
+    'ticketbox.co.ke',
+    'mkeja.co.ke',
+    'proudkenyan.co.ke',
+    'venuenai.com',
+    'eventskenya.co.ke',
+    'nairobidiaries.com',
+    'kenyabuzz.com',
+]
+
+
+async def _crt_name_search(cx: httpx.AsyncClient, apex: str) -> list[str]:
+    """Query crt.name for subdomains of an apex domain. Returns list of subdomains."""
+    try:
+        r = await cx.get(
+            'https://crt.name/v1/search',
+            params={'apex': apex, 'format': 'json'},
+            headers={'Accept': 'application/json'},
+        )
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        names = []
+        for item in (data if isinstance(data, list) else data.get('names', data.get('results', []))):
+            if isinstance(item, dict):
+                name = item.get('name', item.get('subdomain', ''))
+            else:
+                name = str(item)
+            name = name.strip().lower()
+            if name and name != apex and '*' not in name:
+                names.append(name)
+        return list(dict.fromkeys(names))
+    except Exception:  # noqa: BLE001
+        return []
+
+
+async def _crt_name_search_text(cx: httpx.AsyncClient, apex: str) -> list[str]:
+    """Fallback: query crt.name plain-text endpoint."""
+    try:
+        r = await cx.get(
+            'https://crt.name/v1/search',
+            params={'apex': apex},
+            headers={'Accept': 'text/plain'},
+        )
+        if r.status_code != 200:
+            return []
+        names = []
+        for line in r.text.strip().splitlines():
+            name = line.strip().lower()
+            if name and name != apex and '*' not in name:
+                names.append(name)
+        return list(dict.fromkeys(names))
+    except Exception:  # noqa: BLE001
+        return []
+
+
+async def crt_discover(db: Database, existing: set[str],
+                       max_subdomains_per_domain: int = 50) -> int:
+    """Use crt.name CT index to discover subdomains of event platforms,
+    then crawl those subdomains for organizer emails."""
+    added = 0
+    async with httpx.AsyncClient(
+        timeout=15, follow_redirects=True,
+        headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0'}
+    ) as cx:
+        all_subdomains = []
+        for apex in CRT_TARGET_DOMAINS:
+            if state['found'] >= state['target']:
+                break
+            state['phase'] = f'crt.name: {apex}'
+            subs = await _crt_name_search(cx, apex)
+            if not subs:
+                subs = await _crt_name_search_text(cx, apex)
+            for s in subs[:max_subdomains_per_domain]:
+                if s not in all_subdomains:
+                    all_subdomains.append(s)
+
+        state['phase'] = f'crt.name: crawling {len(all_subdomains)} subdomains'
+        for sub in all_subdomains:
+            if state['found'] >= state['target']:
+                break
+            for scheme in ('https', 'http'):
+                if state['found'] >= state['target']:
+                    break
+                try:
+                    pr = await cx.get(f'{scheme}://{sub}', timeout=10)
+                    if pr.status_code < 400:
+                        body = pr.text
+                        emails = extract_emails(re.sub(r'<[^>]+>', ' ', body))
+                        pairs = []
+                        for e in emails:
+                            sc, _ = score_email(e, body[:3000] + ' ' + sub)
+                            if sc >= 3:
+                                pairs.append((e, f'crt.name:{sub[:50]}'))
+                        added += await insert_hosts(db, existing, pairs)
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+            await asyncio.sleep(0.3)
+    return added
